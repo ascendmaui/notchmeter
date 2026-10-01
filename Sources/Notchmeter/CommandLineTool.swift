@@ -118,6 +118,41 @@ enum CommandLineTool {
                     lines.append("  \(label): no limit published")
                 }
             }
+            if let accounts = tool["accounts"] as? [[String: Any]], !accounts.isEmpty {
+                let readyCount = accounts.filter { ($0["status"] as? String) == "ready" }.count
+                lines.append("  accounts: \(accounts.count) configured (\(readyCount) ready)")
+                for acct in accounts {
+                    let slot = acct["slot"] as? String ?? "?"
+                    let email = acct["email"] as? String ?? "?"
+                    let currentTag = (acct["isCurrent"] as? Bool == true) ? " (current)" : ""
+                    let acctStatus = acct["status"] as? String ?? "?"
+                    if acctStatus == "ready", let wins = acct["windows"] as? [[String: Any]], !wins.isEmpty {
+                        let winSummaries = wins.compactMap { w -> String? in
+                            guard let label = w["label"] as? String, let used = JSON.number(w["usedFraction"]) else { return nil }
+                            var part = "\(label): \(Int((used * 100).rounded()))%"
+                            if used >= 0.95, let resetsStr = w["resetsAt"] as? String, let date = DateParsing.iso8601(resetsStr) {
+                                part += " (\(RelativeTime.resets(date, hasLimit: true)))"
+                            }
+                            return part
+                        }.joined(separator: ", ")
+                        lines.append("    [\(slot)] \(email)\(currentTag): \(winSummaries)")
+                    } else {
+                        lines.append("    [\(slot)] \(email)\(currentTag): \(acctStatus)")
+                    }
+                }
+                if let nextSlot = tool["recommendedNextSlot"] as? String, let nextEmail = tool["recommendedNextEmail"] as? String {
+                    lines.append("  rotation: next recommended slot is [\(nextSlot)] (\(nextEmail))")
+                } else if let resetSlot = tool["earliestClaudeResetSlot"] as? String, let resetAtStr = tool["earliestClaudeResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
+                    lines.append("  rotation: all Claude sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
+                }
+            }
+            if tool["tool"] as? String == "chatgpt", let empty = tool["emptyResetsCount"] as? Int, let total = tool["weeklyResetsCount"] as? Int {
+                var cgtLine = "  chatgpt-heavy: \(empty) of \(total) weekly resets available for burn routing (priority 1)"
+                if let activeLabel = tool["activeWindowLabel"] as? String {
+                    cgtLine += " — active: \(activeLabel)"
+                }
+                lines.append(cgtLine)
+            }
         }
         if let cost = root["cost"] as? [String: Any], let today = JSON.number(cost["today"]) {
             var line = "cost: today \(Money.dollars(today)) 30d \(Money.dollars(JSON.number(cost["last30Days"]) ?? 0))"

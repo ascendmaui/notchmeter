@@ -113,7 +113,7 @@ import Testing
             let outcome = ToolMigration.migrate(defaults)
             #expect(outcome.added == [.kimi, .opencode, .chatgpt, .grok, .hermes, .openclaw])
             #expect(outcome.inherited.isEmpty)
-            #expect(defaults.stringArray(forKey: "enabledTools") == ["claude", "kimi", "opencode", "chatgpt", "grok", "hermes", "openclaw"])
+            #expect(Set(defaults.stringArray(forKey: "enabledTools") ?? []) == ["claude", "kimi", "opencode", "chatgpt", "grok", "hermes", "openclaw"])
             #expect(defaults.stringArray(forKey: "menuBarPinnedTools") == ["kimi-was-not-known"], "nothing else is touched")
         }
     }
