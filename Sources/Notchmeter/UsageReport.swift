@@ -124,20 +124,60 @@ struct UsageReport {
             let readyAccounts = accounts.filter { $0.status == "ready" }
             let claudeAvailable = readyAccounts.filter(\.hasClaudeSessionRoom)
             let geminiAvailable = readyAccounts.filter(\.hasGeminiSessionRoom)
-            let current = accounts.first(where: \.isCurrent)
-            let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, forModelFamily: "claude")
+            let current = accounts.first(where: \.isCurrent) ?? accounts.first
+            let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
             let earliestClaudeReset = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude")
+            let earliestGeminiReset = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini")
+
+            let activeHasClaudeRoom = current?.hasClaudeSessionRoom ?? false
+            let activeHasGeminiRoom = current?.hasGeminiSessionRoom ?? false
+            let activeClaudeUsed = current?.claudeSessionWindow?.usedFraction
+            let activeGeminiUsed = current?.geminiSessionWindow?.usedFraction
+
+            var rotationAdvice: String
+            if let cur = current {
+                if !activeHasClaudeRoom {
+                    if let next = nextSlot {
+                        rotationAdvice = "Active slot [\(cur.slot)] Claude session exhausted. Rotate to [\(next.slot)] (\(next.email))."
+                    } else if let reset = earliestClaudeReset {
+                        let duration = RelativeTime.resets(reset.resetsAt, hasLimit: true, now: now)
+                        rotationAdvice = "All Antigravity Claude sessions exhausted. Earliest [\(reset.slot)] \(duration)."
+                    } else {
+                        rotationAdvice = "All Antigravity Claude sessions exhausted."
+                    }
+                } else if let used = activeClaudeUsed, used >= 0.75 {
+                    if let next = nextSlot {
+                        rotationAdvice = "Active slot [\(cur.slot)] Claude session at \(Int((used * 100).rounded()))%. Next in rotation: [\(next.slot)]."
+                    } else {
+                        rotationAdvice = "Active slot [\(cur.slot)] Claude session at \(Int((used * 100).rounded()))%."
+                    }
+                } else {
+                    let roomPercent = Int(((1.0 - (activeClaudeUsed ?? 0)) * 100).rounded())
+                    if let next = nextSlot {
+                        rotationAdvice = "Active slot [\(cur.slot)] has \(roomPercent)% Claude session room. Next in rotation: [\(next.slot)] (\(next.email))."
+                    } else {
+                        rotationAdvice = "Active slot [\(cur.slot)] has \(roomPercent)% Claude session room."
+                    }
+                }
+            } else {
+                rotationAdvice = "No active slot detected."
+            }
 
             var agySummary: [String: Any] = [
                 "total": accounts.count,
                 "signedIn": readyAccounts.count,
                 "currentSlot": current?.slot as Any,
                 "currentEmail": current?.email as Any,
+                "activeSlot": current?.slot as Any,
+                "activeEmail": current?.email as Any,
+                "activeHasClaudeRoom": activeHasClaudeRoom,
+                "activeHasGeminiRoom": activeHasGeminiRoom,
                 "rotationOrder": AntigravityAccounts.rotationOrder,
                 "claudeAvailableCount": claudeAvailable.count,
                 "geminiAvailableCount": geminiAvailable.count,
                 "recommendedNextSlot": nextSlot?.slot as Any,
                 "recommendedNextEmail": nextSlot?.email as Any,
+                "rotationAdvice": rotationAdvice,
                 "slots": accounts.map { acct -> [String: Any] in
                     var slotDict: [String: Any] = [
                         "slot": acct.slot,
@@ -147,13 +187,21 @@ struct UsageReport {
                         "hasClaudeRoom": acct.hasClaudeSessionRoom,
                         "hasGeminiRoom": acct.hasGeminiSessionRoom,
                     ]
+                    if let room = acct.claudeSessionRoomFraction { slotDict["claudeSessionRoom"] = Oracle.fraction(room) }
+                    if let room = acct.geminiSessionRoomFraction { slotDict["geminiSessionRoom"] = Oracle.fraction(room) }
                     if let win = acct.claudeSessionWindow {
                         if let used = win.usedFraction { slotDict["claudeSessionUsed"] = Oracle.fraction(used) }
-                        if let reset = win.resetsAt { slotDict["claudeSessionResetsAt"] = Oracle.timestamp(reset) }
+                        if let reset = win.resetsAt {
+                            slotDict["claudeSessionResetsAt"] = Oracle.timestamp(reset)
+                            slotDict["claudeSessionResetsInSeconds"] = max(0, Int(reset.timeIntervalSince(now)))
+                        }
                     }
                     if let win = acct.geminiSessionWindow {
                         if let used = win.usedFraction { slotDict["geminiSessionUsed"] = Oracle.fraction(used) }
-                        if let reset = win.resetsAt { slotDict["geminiSessionResetsAt"] = Oracle.timestamp(reset) }
+                        if let reset = win.resetsAt {
+                            slotDict["geminiSessionResetsAt"] = Oracle.timestamp(reset)
+                            slotDict["geminiSessionResetsInSeconds"] = max(0, Int(reset.timeIntervalSince(now)))
+                        }
                     }
                     if let win = acct.claudeWeeklyWindow {
                         if let used = win.usedFraction { slotDict["claudeWeeklyUsed"] = Oracle.fraction(used) }
@@ -166,9 +214,19 @@ struct UsageReport {
                     return slotDict
                 }
             ]
+            if let used = activeClaudeUsed { agySummary["activeClaudeSessionUsed"] = Oracle.fraction(used) }
+            if let reset = current?.claudeSessionWindow?.resetsAt { agySummary["activeClaudeSessionResetsAt"] = Oracle.timestamp(reset) }
+            if let used = activeGeminiUsed { agySummary["activeGeminiSessionUsed"] = Oracle.fraction(used) }
+            if let reset = current?.geminiSessionWindow?.resetsAt { agySummary["activeGeminiSessionResetsAt"] = Oracle.timestamp(reset) }
             if let reset = earliestClaudeReset {
                 agySummary["earliestClaudeResetSlot"] = reset.slot
                 agySummary["earliestClaudeResetAt"] = Oracle.timestamp(reset.resetsAt)
+                agySummary["earliestClaudeResetsInSeconds"] = max(0, Int(reset.resetsAt.timeIntervalSince(now)))
+            }
+            if let reset = earliestGeminiReset {
+                agySummary["earliestGeminiResetSlot"] = reset.slot
+                agySummary["earliestGeminiResetAt"] = Oracle.timestamp(reset.resetsAt)
+                agySummary["earliestGeminiResetsInSeconds"] = max(0, Int(reset.resetsAt.timeIntervalSince(now)))
             }
             root["antigravityAccounts"] = agySummary
         }
@@ -182,6 +240,11 @@ struct UsageReport {
             }
             let earliestReset = weeklyResets.compactMap(\.resetsAt).min()
             let activeWindow = weeklyResets.first(where: { ($0.usedFraction ?? 0) < 0.85 }) ?? weeklyResets.first
+            let activeLabel = activeWindow?.label ?? "Weekly reset 1"
+            let firstEmptyLabel = emptyWeeks.first?.label ?? "Weekly reset 1"
+            let burnAdvice = emptyWeeks.isEmpty
+                ? "All weekly resets burned or in use"
+                : "Burn \(firstEmptyLabel) (empty, priority 1)"
 
             root["chatgptHeavy"] = [
                 "active": true,
@@ -192,10 +255,12 @@ struct UsageReport {
                 "inProgressResets": inProgressWeeks.count,
                 "preferBurn": !emptyWeeks.isEmpty,
                 "activeWindowID": activeWindow?.id as Any,
-                "activeWindowLabel": activeWindow?.label as Any,
+                "activeWindowLabel": activeLabel,
                 "nextResetAt": earliestReset.map(Oracle.timestamp) as Any,
+                "nextResetInSeconds": earliestReset.map { max(0, Int($0.timeIntervalSince(now))) } as Any,
                 "emptyWindowIDs": emptyWeeks.map(\.id),
-                "burnAdvice": emptyWeeks.isEmpty ? "All weekly resets burned or in use" : "Burn weekly reset \(emptyWeeks.first?.label ?? "") (empty, priority 1)"
+                "headroomFractions": weeklyResets.map { Oracle.fraction(max(0, 1.0 - ($0.usedFraction ?? 0))) },
+                "burnAdvice": burnAdvice
             ]
         }
         return root
@@ -224,8 +289,10 @@ struct UsageReport {
                 let readyAccounts = accounts.filter { $0.status == "ready" }
                 let claudeAvailable = readyAccounts.filter(\.hasClaudeSessionRoom)
                 let geminiAvailable = readyAccounts.filter(\.hasGeminiSessionRoom)
-                let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, forModelFamily: "claude")
+                let current = accounts.first(where: \.isCurrent) ?? accounts.first
+                let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
                 let earliestClaudeReset = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude")
+                let earliestGeminiReset = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini")
 
                 object["accounts"] = accounts.map { acct -> [String: Any] in
                     var acctObj: [String: Any] = [
@@ -248,13 +315,21 @@ struct UsageReport {
                             return winObj
                         }
                     ]
+                    if let room = acct.claudeSessionRoomFraction { acctObj["claudeSessionRoom"] = Oracle.fraction(room) }
+                    if let room = acct.geminiSessionRoomFraction { acctObj["geminiSessionRoom"] = Oracle.fraction(room) }
                     if let win = acct.claudeSessionWindow {
                         if let used = win.usedFraction { acctObj["claudeSessionUsed"] = Oracle.fraction(used) }
-                        if let reset = win.resetsAt { acctObj["claudeSessionResetsAt"] = Oracle.timestamp(reset) }
+                        if let reset = win.resetsAt {
+                            acctObj["claudeSessionResetsAt"] = Oracle.timestamp(reset)
+                            acctObj["claudeSessionResetsInSeconds"] = max(0, Int(reset.timeIntervalSince(now)))
+                        }
                     }
                     if let win = acct.geminiSessionWindow {
                         if let used = win.usedFraction { acctObj["geminiSessionUsed"] = Oracle.fraction(used) }
-                        if let reset = win.resetsAt { acctObj["geminiSessionResetsAt"] = Oracle.timestamp(reset) }
+                        if let reset = win.resetsAt {
+                            acctObj["geminiSessionResetsAt"] = Oracle.timestamp(reset)
+                            acctObj["geminiSessionResetsInSeconds"] = max(0, Int(reset.timeIntervalSince(now)))
+                        }
                     }
                     if let win = acct.claudeWeeklyWindow {
                         if let used = win.usedFraction { acctObj["claudeWeeklyUsed"] = Oracle.fraction(used) }
@@ -275,13 +350,23 @@ struct UsageReport {
                 object["geminiAvailableCount"] = geminiAvailable.count
                 object["recommendedNextSlot"] = nextSlot?.slot as Any
                 object["recommendedNextEmail"] = nextSlot?.email as Any
+                object["activeSlot"] = current?.slot as Any
+                object["activeEmail"] = current?.email as Any
+                object["activeHasClaudeRoom"] = current?.hasClaudeSessionRoom ?? false
+                object["activeHasGeminiRoom"] = current?.hasGeminiSessionRoom ?? false
                 if let reset = earliestClaudeReset {
                     object["earliestClaudeResetSlot"] = reset.slot
                     object["earliestClaudeResetAt"] = Oracle.timestamp(reset.resetsAt)
+                    object["earliestClaudeResetsInSeconds"] = max(0, Int(reset.resetsAt.timeIntervalSince(now)))
                 }
-                if let current = accounts.first(where: \.isCurrent) {
-                    object["currentSlot"] = current.slot
-                    object["currentEmail"] = current.email
+                if let reset = earliestGeminiReset {
+                    object["earliestGeminiResetSlot"] = reset.slot
+                    object["earliestGeminiResetAt"] = Oracle.timestamp(reset.resetsAt)
+                    object["earliestGeminiResetsInSeconds"] = max(0, Int(reset.resetsAt.timeIntervalSince(now)))
+                }
+                if let cur = current {
+                    object["currentSlot"] = cur.slot
+                    object["currentEmail"] = cur.email
                 }
             }
             if tool == .chatgpt {
@@ -295,18 +380,22 @@ struct UsageReport {
                 }
                 let earliestReset = weeklyResets.compactMap(\.resetsAt).min()
                 let activeWindow = weeklyResets.first(where: { ($0.usedFraction ?? 0) < 0.85 }) ?? weeklyResets.first
+                let activeLabel = activeWindow?.label ?? "Weekly reset 1"
+                let firstEmptyLabel = emptyWeeks.first?.label ?? "Weekly reset 1"
 
                 object["weeklyResetsCount"] = weeklyResets.count
                 object["emptyResetsCount"] = emptyWeeks.count
                 object["burnedResetsCount"] = burnedWeeks.count
                 object["inProgressResetsCount"] = inProgressWeeks.count
                 object["burnPriority"] = 1
+                object["burnAdvice"] = emptyWeeks.isEmpty ? "All weekly resets burned or in use" : "Burn \(firstEmptyLabel) (empty, priority 1)"
                 if let earliest = earliestReset {
                     object["earliestResetAt"] = Oracle.timestamp(earliest)
+                    object["earliestResetInSeconds"] = max(0, Int(earliest.timeIntervalSince(now)))
                 }
                 if let active = activeWindow {
                     object["activeWindowID"] = active.id
-                    object["activeWindowLabel"] = active.label
+                    object["activeWindowLabel"] = activeLabel
                 }
             }
             object["windows"] = reading.windows.map { window -> [String: Any] in

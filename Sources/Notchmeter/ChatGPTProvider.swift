@@ -37,6 +37,9 @@ struct ChatGPTProvider: UsageProvider {
     }
 
     func isInstalled() -> Bool {
+        if ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_USAGE"] != nil {
+            return true
+        }
         let fm = FileManager.default
         if fm.fileExists(atPath: appBundle.path) { return true }
         if fm.fileExists(atPath: openAISupport.path) { return true }
@@ -63,31 +66,45 @@ struct ChatGPTProvider: UsageProvider {
     }
 
     /// Placeholder windows for tests / future wiring: four equal weekly slots, unused.
-    static func stubWindows(now: Date = Date()) -> [LimitWindow] {
+    static func stubWindows(now: Date = Date(), customOffsets: [TimeInterval]? = nil) -> [LimitWindow] {
         weeklyWindowIDs.enumerated().map { index, id in
-            LimitWindow(id: id,
-                        label: .filled("Weekly reset %ld", [.number(index + 1)]),
-                        usedFraction: 0,
-                        resetsAt: now.addingTimeInterval(Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0),
-                        note: L("Four weekly resets reserved; prefer burning empty weeks before other platforms"),
-                        periodDuration: Period.week,
-                        source: .localEstimate,
-                        hiddenByDefault: false)
+            let resetOffset = (customOffsets != nil && index < customOffsets!.count)
+                ? customOffsets![index]
+                : Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0
+            return LimitWindow(id: id,
+                               label: .filled("Weekly reset %ld", [.number(index + 1)]),
+                               usedFraction: 0,
+                               resetsAt: now.addingTimeInterval(resetOffset),
+                               note: L("Four weekly resets reserved; prefer burning empty weeks before other platforms"),
+                               periodDuration: Period.week,
+                               source: .localEstimate,
+                               hiddenByDefault: false)
         }
     }
 
     /// Loads the four weekly windows from env override, local json file, or defaults to stub windows.
     func loadWindows(now: Date = Date()) -> [LimitWindow] {
+        var customOffsets: [TimeInterval]?
+        if let resetEnv = ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_RESET_HOURS"] {
+            let hours = resetEnv.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            if !hours.isEmpty {
+                customOffsets = hours.map { $0 * 3600 }
+            }
+        }
+
         // 1. Check environment variable override: NOTCHMETER_CHATGPT_USAGE="0.0,0.1,0.0,0.0"
         if let env = ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_USAGE"] {
             let fractions = env.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             if !fractions.isEmpty {
                 return Self.weeklyWindowIDs.enumerated().map { index, id in
                     let used = index < fractions.count ? min(max(fractions[index], 0), 1) : 0
+                    let resetOffset = (customOffsets != nil && index < customOffsets!.count)
+                        ? customOffsets![index]
+                        : Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0
                     return LimitWindow(id: id,
                                        label: .filled("Weekly reset %ld", [.number(index + 1)]),
                                        usedFraction: used,
-                                       resetsAt: now.addingTimeInterval(Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0),
+                                       resetsAt: now.addingTimeInterval(resetOffset),
                                        note: L("Configured via NOTCHMETER_CHATGPT_USAGE"),
                                        periodDuration: Period.week,
                                        source: .localEstimate,
@@ -109,7 +126,7 @@ struct ChatGPTProvider: UsageProvider {
         }
 
         // 3. Fallback to stub windows (empty, ready for heavy burn)
-        return Self.stubWindows(now: now)
+        return Self.stubWindows(now: now, customOffsets: customOffsets)
     }
 
     /// Parses a custom chatgpt-usage.json file.

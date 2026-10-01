@@ -246,4 +246,117 @@ import Testing
         #expect(chatgptTool["burnPriority"] as? Int == 1)
         #expect(chatgptTool["activeWindowID"] as? String == "chatgpt_week_1")
     }
+
+    @Test func antigravityCircularRotationWithStartingAfter() {
+        let now = Date()
+        let acct3 = AntigravityAccount(
+            slot: "agy3", index: 3, email: "503meds@gmail.com", homeDirectory: "/tmp/acct3", isCurrent: false, status: "ready",
+            windows: [LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.10, resetsAt: now.addingTimeInterval(3600))]
+        )
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 1.0, resetsAt: now.addingTimeInterval(1200))]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.20, resetsAt: now.addingTimeInterval(4800))]
+        )
+        let acct6 = AntigravityAccount(
+            slot: "agy6", index: 6, email: "powerevllc@gmail.com", homeDirectory: "/tmp/acct6", isCurrent: false, status: "ready",
+            windows: [LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.05, resetsAt: now.addingTimeInterval(7200))]
+        )
+
+        // Rotation order: agy, agy6, agy3, agy2, agy4, agy5, agy7
+        // Starting after agy4 (index 4), the next ready candidate is agy5 (index 5)!
+        let nextAfterAgy4 = AntigravityAccounts.recommendedNextSlot(accounts: [acct3, acct4, acct5, acct6], startingAfter: "agy4", forModelFamily: "claude")
+        #expect(nextAfterAgy4?.slot == "agy5")
+
+        // Starting after agy5 (index 5) with only [acct3, acct4, acct6], candidates are agy7, agy, agy6 -> agy6!
+        let nextAfterAgy5 = AntigravityAccounts.recommendedNextSlot(accounts: [acct3, acct4, acct6], startingAfter: "agy5", forModelFamily: "claude")
+        #expect(nextAfterAgy5?.slot == "agy6")
+    }
+
+    @Test func antigravityProactiveSessionClosingAdvice() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.80, resetsAt: now.addingTimeInterval(1200))
+            ]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4, acct5])
+        let context = Advisor.Context(readings: [reading], toolOrder: ToolID.allCases, now: now)
+        let advice = Advisor.johnRouting(context)
+        #expect(advice.contains { $0.id == "john/antigravity-session-closing" })
+    }
+
+    @Test func chatgptHeavyEnvironmentOverrideEnablesInstallation() {
+        let provider = ChatGPTProvider(home: URL(fileURLWithPath: "/tmp/nonexistent-home"),
+                                       applications: URL(fileURLWithPath: "/tmp/nonexistent-apps"))
+        setenv("NOTCHMETER_CHATGPT_USAGE", "0.2,0.4,0.0,0.0", 1)
+        defer { unsetenv("NOTCHMETER_CHATGPT_USAGE") }
+        #expect(provider.isInstalled())
+
+        let windows = provider.loadWindows()
+        #expect(windows.count == 4)
+        #expect(windows[0].usedFraction == 0.2)
+        #expect(windows[1].usedFraction == 0.4)
+    }
+
+    @Test func chatgptHeavyResetHoursOverride() {
+        let provider = ChatGPTProvider()
+        setenv("NOTCHMETER_CHATGPT_USAGE", "0.1,0.0,0.0,0.0", 1)
+        setenv("NOTCHMETER_CHATGPT_RESET_HOURS", "12,24,36,48", 1)
+        defer {
+            unsetenv("NOTCHMETER_CHATGPT_USAGE")
+            unsetenv("NOTCHMETER_CHATGPT_RESET_HOURS")
+        }
+        let now = Date()
+        let windows = provider.loadWindows(now: now)
+        #expect(windows.count == 4)
+        if let reset1 = windows[0].resetsAt {
+            let hours = reset1.timeIntervalSince(now) / 3600.0
+            #expect(abs(hours - 12.0) < 0.1)
+        }
+    }
+
+    @Test func antigravityReportRichFieldsAndResetsInSeconds() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.10, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.25, resetsAt: now.addingTimeInterval(1800))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4])
+        let report = UsageReport(tools: [.antigravity: .ready(reading)], order: [.antigravity], cost: nil, advice: [], now: now)
+        let object = report.object
+
+        guard let agyAccounts = object["antigravityAccounts"] as? [String: Any] else {
+            Issue.record("antigravityAccounts missing in report object")
+            return
+        }
+        #expect(agyAccounts["activeSlot"] as? String == "agy4")
+        #expect(agyAccounts["activeEmail"] as? String == "ascendlifesc@gmail.com")
+        #expect(agyAccounts["activeHasClaudeRoom"] as? Bool == true)
+        #expect(agyAccounts["activeHasGeminiRoom"] as? Bool == true)
+        #expect(agyAccounts["earliestClaudeResetsInSeconds"] as? Int == 3600)
+        #expect(agyAccounts["earliestGeminiResetsInSeconds"] as? Int == 1800)
+        #expect(agyAccounts["rotationAdvice"] as? String != nil)
+
+        guard let tools = object["tools"] as? [[String: Any]], let agyTool = tools.first(where: { $0["tool"] as? String == "antigravity" }) else {
+            Issue.record("antigravity tool object missing")
+            return
+        }
+        #expect(agyTool["activeSlot"] as? String == "agy4")
+        #expect(agyTool["activeEmail"] as? String == "ascendlifesc@gmail.com")
+        #expect(agyTool["earliestClaudeResetsInSeconds"] as? Int == 3600)
+    }
 }
