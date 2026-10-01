@@ -44,7 +44,7 @@ struct ChatGPTProvider: UsageProvider {
            names.contains(where: { $0.hasPrefix("ChatGPT_") }) {
             return true
         }
-        if UserDefaults(suiteName: "com.openai.codex")?.object(forKey: "LastRunAppBundlePath") != nil {
+        if home == Paths.home, UserDefaults(suiteName: "com.openai.codex")?.object(forKey: "LastRunAppBundlePath") != nil {
             return true
         }
         return false
@@ -54,12 +54,14 @@ struct ChatGPTProvider: UsageProvider {
         DiagnosticLog.request(log, "chatgpt-probe", status: 200, bytes: 0)
         let now = Date()
         let observed = lastLaunchedAt()
-        let windows = loadWindows(now: now)
-        return UsageReading(tool: tool,
-                            windows: windows,
-                            plan: "Plus/Pro (4 weekly resets)",
-                            fetchedAt: now,
-                            observedAt: observed)
+        if let windows = loadOverrideWindows(now: now) {
+            return UsageReading(tool: tool,
+                                windows: windows,
+                                plan: "Plus/Pro (4 weekly resets)",
+                                fetchedAt: now,
+                                observedAt: observed)
+        }
+        throw ProviderError.nothingYet(L("ChatGPT is on this Mac, but its four weekly chat resets are not readable yet. Prefer burning empty ChatGPT weeks before other platforms; when Sol 5.6, Astra or Luna tools exist, prefer those models. See docs/john-providers.md."))
     }
 
     /// Placeholder windows for tests / future wiring: four equal weekly slots, unused.
@@ -76,8 +78,8 @@ struct ChatGPTProvider: UsageProvider {
         }
     }
 
-    /// Loads the four weekly windows from env override, local json file, or defaults to stub windows.
-    func loadWindows(now: Date = Date()) -> [LimitWindow] {
+    /// Loads override windows from environment variable or local usage file if configured.
+    func loadOverrideWindows(now: Date = Date()) -> [LimitWindow]? {
         // 1. Check environment variable override: NOTCHMETER_CHATGPT_USAGE="0.0,0.1,0.0,0.0"
         if let env = ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_USAGE"] {
             let fractions = env.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -108,8 +110,12 @@ struct ChatGPTProvider: UsageProvider {
             }
         }
 
-        // 3. Fallback to stub windows (empty, ready for heavy burn)
-        return Self.stubWindows(now: now)
+        return nil
+    }
+
+    /// Loads the four weekly windows from env override, local json file, or defaults to stub windows.
+    func loadWindows(now: Date = Date()) -> [LimitWindow] {
+        loadOverrideWindows(now: now) ?? Self.stubWindows(now: now)
     }
 
     /// Parses a custom chatgpt-usage.json file.

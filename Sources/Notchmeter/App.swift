@@ -1956,6 +1956,9 @@ enum Probe {
 
     static func describe(_ reading: UsageReading) -> String {
         var lines = ["\(reading.tool.displayName)\(reading.plan.map { " (\($0))" } ?? "")"]
+        if let metrics = reading.chatGPTHeavyMetrics {
+            lines.append("  \(metrics.summaryText)")
+        }
         for window in reading.windows {
             var note = window.note.map { " [\($0)]" } ?? ""
             if let tag = window.source.tag { note += " <\(tag)>" }

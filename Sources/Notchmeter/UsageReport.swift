@@ -285,6 +285,9 @@ struct UsageReport {
                 }
             }
             if tool == .chatgpt {
+                if let metrics = reading.chatGPTHeavyMetrics {
+                    object["chatgptMetrics"] = metrics.dictionary
+                }
                 object["chatgptHeavy"] = true
                 let weeklyResets = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) }
                 let emptyWeeks = weeklyResets.filter { ($0.usedFraction ?? 1) < 0.15 }
