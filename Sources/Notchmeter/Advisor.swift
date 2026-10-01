@@ -693,6 +693,7 @@ enum Advisor {
                 lines.append(Advice(id: "john/chatgpt-exhausted", tool: .chatgpt, priority: .warn, symbol: "flame",
                                     text: L("ChatGPT weekly resets are mostly spent; route elsewhere until the next reset.")))
             }
+        }
         // Sol / Astra / Luna: only when those ToolIDs exist and have headroom (PreferredModels). Docs carry the stub note.
         let preferred = PreferredModels.available(in: context)
         if !preferred.isEmpty {
