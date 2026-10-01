@@ -141,6 +141,9 @@ struct UsageReport {
             object["plan"] = reading.plan as Any
             object["fetchedAt"] = Oracle.timestamp(reading.fetchedAt)
             object["stale"] = status.staleReading != nil
+            if tool == .chatgpt, let metrics = reading.chatGPTHeavyMetrics {
+                object["chatgptMetrics"] = metrics.dictionary
+            }
             object["windows"] = reading.windows.map { window -> [String: Any] in
                 let key = DrainLog.Key(tool: tool, window: window.id)
                 let drain = drains[key]

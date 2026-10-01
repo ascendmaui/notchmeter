@@ -32,10 +32,10 @@ import Testing
         withSuite("inherit") { defaults in
             legacy(defaults)
             let outcome = ToolMigration.migrate(defaults)
-            #expect(outcome.added == [.gemini, .kimi, .opencode])
+            #expect(outcome.added == [.gemini, .kimi, .opencode, .chatgpt, .grok, .hermes, .openclaw])
             #expect(outcome.inherited == [.gemini: .antigravity])
             let enabled = Set(defaults.stringArray(forKey: "enabledTools") ?? [])
-            #expect(enabled == ["antigravity", "claude", "gemini", "kimi", "opencode"], "on because the combined row was, and a new tool starts on")
+            #expect(enabled == ["antigravity", "claude", "gemini", "kimi", "opencode", "chatgpt", "grok", "hermes", "openclaw"], "on because the combined row was, and a new tool starts on")
             #expect(defaults.stringArray(forKey: "toolOrder") == ["claude", "gemini", "antigravity", "codex", "cursor", "copilot"],
                     "just before Antigravity, where a new install has it")
             #expect(defaults.stringArray(forKey: "menuBarPinnedTools") == ["antigravity", "gemini"])
@@ -55,8 +55,8 @@ import Testing
         withSuite("prefs") { defaults in
             legacy(defaults)
             let prefs = Preferences(defaults: defaults)
-            #expect(prefs.enabledTools == [.claude, .gemini, .antigravity, .kimi, .opencode])
-            let order: [ToolID] = [.claude, .gemini, .antigravity, .codex, .cursor, .copilot, .kimi, .opencode]
+            #expect(prefs.enabledTools == [.claude, .gemini, .antigravity, .kimi, .opencode, .chatgpt, .grok, .hermes, .openclaw])
+            let order: [ToolID] = [.claude, .gemini, .antigravity, .codex, .cursor, .copilot, .kimi, .opencode, .chatgpt, .grok, .hermes, .openclaw]
             #expect(prefs.toolOrder == order)
             #expect(prefs.menuBarPinnedTools == [.gemini, .antigravity])
             #expect(prefs.peakHoursTools == [.claude, .gemini, .antigravity])
@@ -70,7 +70,7 @@ import Testing
         withSuite("off") { defaults in
             legacy(defaults, antigravityOn: false)
             ToolMigration.migrate(defaults)
-            #expect(Set(defaults.stringArray(forKey: "enabledTools") ?? []) == ["claude", "kimi", "opencode"])
+            #expect(Set(defaults.stringArray(forKey: "enabledTools") ?? []) == ["claude", "kimi", "opencode", "chatgpt", "grok", "hermes", "openclaw"])
         }
     }
 
@@ -111,9 +111,9 @@ import Testing
             defaults.set(["claude"], forKey: "enabledTools")
             defaults.set(["kimi-was-not-known"], forKey: "menuBarPinnedTools")
             let outcome = ToolMigration.migrate(defaults)
-            #expect(outcome.added == [.kimi, .opencode])
+            #expect(outcome.added == [.kimi, .opencode, .chatgpt, .grok, .hermes, .openclaw])
             #expect(outcome.inherited.isEmpty)
-            #expect(defaults.stringArray(forKey: "enabledTools") == ["claude", "kimi", "opencode"])
+            #expect(defaults.stringArray(forKey: "enabledTools") == ["claude", "kimi", "opencode", "chatgpt", "grok", "hermes", "openclaw"])
             #expect(defaults.stringArray(forKey: "menuBarPinnedTools") == ["kimi-was-not-known"], "nothing else is touched")
         }
     }
