@@ -193,7 +193,7 @@ enum ShareCardTheme: String, CaseIterable, Codable, Sendable {
         case (.black, .opencode): 0xBE3CE6
         case (.black, .chatgpt): 0x10A37F
         case (.black, .grok): 0xFF6B35
-        case (.black, .hermes): 0x6C5CE7
+        case (.black, .hermes): 0x7868E6
         case (.black, .openclaw): 0xE17055
         case (.blue, .claude): 0xF4A582
         case (.blue, .codex): 0x6EE7A8

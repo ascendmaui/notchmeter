@@ -393,6 +393,17 @@ struct UsageReading: Codable, Equatable, Sendable {
     let fetchedAt: Date
     /// When the tool itself produced the numbers. Codex writes snapshots to disk, so this can trail fetchedAt.
     let observedAt: Date?
+    /// Multi-account Antigravity accounts on this Mac, populated when tool is .antigravity.
+    let accounts: [AntigravityAccount]?
+
+    init(tool: ToolID, windows: [LimitWindow], plan: String?, fetchedAt: Date, observedAt: Date?, accounts: [AntigravityAccount]? = nil) {
+        self.tool = tool
+        self.windows = windows
+        self.plan = plan
+        self.fetchedAt = fetchedAt
+        self.observedAt = observedAt
+        self.accounts = accounts
+    }
 
     /// Whether the plan is one the user pays for, which is what makes its room worth routing work to: a free
     /// tier's window is small and has no overage behind it. The only hard signal is the plan's own name — Codex's
@@ -417,11 +428,11 @@ struct UsageReading: Codable, Equatable, Sendable {
                 insertAt += 1
             }
         }
-        return UsageReading(tool: tool, windows: merged, plan: plan, fetchedAt: fetchedAt, observedAt: observedAt)
+        return UsageReading(tool: tool, windows: merged, plan: plan, fetchedAt: fetchedAt, observedAt: observedAt, accounts: accounts)
     }
 
     func with(windows: [LimitWindow]) -> UsageReading {
-        UsageReading(tool: tool, windows: windows, plan: plan, fetchedAt: fetchedAt, observedAt: observedAt)
+        UsageReading(tool: tool, windows: windows, plan: plan, fetchedAt: fetchedAt, observedAt: observedAt, accounts: accounts)
     }
 }
 

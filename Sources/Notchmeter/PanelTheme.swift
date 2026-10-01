@@ -296,7 +296,7 @@ enum PanelInk: Hashable, Sendable {
             // John fork assistants: ChatGPT teal distinct from Codex mint; Grok amber; Hermes indigo; OpenClaw coral.
             case .chatgpt: RGB(hex: 0x10A37F)
             case .grok: RGB(hex: 0xFF6B35)
-            case .hermes: RGB(hex: 0x6C5CE7)
+            case .hermes: RGB(hex: 0x7868E6)
             case .openclaw: RGB(hex: 0xE17055)
             }
         case .companion(let tool, let index):

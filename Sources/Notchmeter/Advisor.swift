@@ -687,11 +687,27 @@ enum Advisor {
             let weekly = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) }
             let empty = weekly.filter { ($0.usedFraction ?? 1) < 0.15 }
             if !empty.isEmpty {
+                let firstEmptyLabel = empty.first?.label ?? "Weekly reset"
                 lines.append(Advice(id: "john/chatgpt-burn", tool: .chatgpt, priority: .info, symbol: "flame",
-                                    text: L("ChatGPT has %ld weekly reset(s) with room — burn those before other platforms.", empty.count)))
+                                    text: L("ChatGPT has %ld weekly reset(s) with room (%@ empty) — burn those before other platforms.", empty.count, firstEmptyLabel)))
             } else if weekly.contains(where: { ($0.usedFraction ?? 0) >= 0.9 }) {
                 lines.append(Advice(id: "john/chatgpt-exhausted", tool: .chatgpt, priority: .warn, symbol: "flame",
                                     text: L("ChatGPT weekly resets are mostly spent; route elsewhere until the next reset.")))
+            }
+        }
+        // Multi-account Antigravity rotation:
+        if let agyReading = context.readings.first(where: { $0.tool == .antigravity }),
+           let accounts = agyReading.accounts, !accounts.isEmpty {
+            let current = accounts.first(where: \.isCurrent) ?? accounts.first
+            if let cur = current, !cur.hasClaudeSessionRoom {
+                if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, forModelFamily: "claude") {
+                    lines.append(Advice(id: "john/antigravity-rotate", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
+                                        text: L("Antigravity [%@] Claude session is exhausted. Rotate to [%@] (%@).", cur.slot, nextSlot.slot, nextSlot.email)))
+                } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                    let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
+                    lines.append(Advice(id: "john/antigravity-all-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
+                                        text: L("All Antigravity Claude sessions exhausted across %ld accounts. Earliest %@ ([%@]). Use Gemini models or ChatGPT.", accounts.count, resetStr, earliest.slot)))
+                }
             }
         }
         // Sol / Astra / Luna: only when those ToolIDs exist and have headroom (PreferredModels). Docs carry the stub note.
