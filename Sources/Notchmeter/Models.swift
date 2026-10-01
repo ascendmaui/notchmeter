@@ -9,6 +9,14 @@ import os
 /// ToolMigration carries the combined row's preferences over to both so an existing setup keeps its shape.
 enum ToolID: String, CaseIterable, Codable, Hashable, Sendable {
     case claude, codex, cursor, gemini, antigravity, copilot, kimi, opencode
+    /// ChatGPT (Plus/Pro chat) — John's priority; four weekly usage resets. Distinct from Codex.
+    case chatgpt
+    /// Standalone xAI / Grok (Grok Bot.app / SuperGrok), not Cursor's in-editor "Grok Bot" seat window.
+    case grok
+    /// Hermes desktop agent (Application Support/Hermes).
+    case hermes
+    /// OpenClaw + OpenClaw Dashboard.
+    case openclaw
 
     var displayName: String {
         switch self {
@@ -20,6 +28,10 @@ enum ToolID: String, CaseIterable, Codable, Hashable, Sendable {
         case .copilot: "Copilot"
         case .kimi: "Kimi"
         case .opencode: "OpenCode"
+        case .chatgpt: "ChatGPT"
+        case .grok: "Grok"
+        case .hermes: "Hermes"
+        case .openclaw: "OpenClaw"
         }
     }
 
@@ -38,6 +50,10 @@ enum ToolID: String, CaseIterable, Codable, Hashable, Sendable {
         // Braces for the code in the name: `terminal` is Gemini CLI's since the 0.9.0 split, and two rings wearing the
         // same mark would defeat the mark.
         case .opencode: "curlybraces"
+        case .chatgpt: "bubble.left.and.bubble.right"
+        case .grok: "bolt.horizontal"
+        case .hermes: "wand.and.stars"
+        case .openclaw: "puzzlepiece.extension"
         }
     }
 
@@ -48,7 +64,9 @@ enum ToolID: String, CaseIterable, Codable, Hashable, Sendable {
         case .gemini: "Gemini CLI"
         case .copilot: "GitHub Copilot"
         case .kimi: "Kimi Code"
-        case .codex, .cursor, .antigravity, .opencode: displayName
+        case .chatgpt: "ChatGPT"
+        case .grok: "Grok / xAI"
+        case .codex, .cursor, .antigravity, .opencode, .hermes, .openclaw: displayName
         }
     }
 
@@ -59,10 +77,11 @@ enum ToolID: String, CaseIterable, Codable, Hashable, Sendable {
     /// message records its tokens, its model and the cost OpenCode put on it. Gemini CLI, Antigravity and Kimi
     /// meter a request allowance rather than money, with no price and no token count a published rate could be
     /// applied to, so they cannot produce a dollar figure and never appear on the Cost card (docs/accuracy.md).
+    /// ChatGPT / Grok / Hermes / OpenClaw stubs meter allowances (or nothing yet), not dollars.
     var reportsCost: Bool {
         switch self {
         case .claude, .codex, .cursor, .copilot, .opencode: true
-        case .gemini, .antigravity, .kimi: false
+        case .gemini, .antigravity, .kimi, .chatgpt, .grok, .hermes, .openclaw: false
         }
     }
 }
@@ -722,6 +741,10 @@ enum ProviderLinks {
         case .kimi: URL(string: "https://www.kimi.com/code/console")!
         // The console the Go page itself points at for "your current usage".
         case .opencode: URL(string: "https://opencode.ai/auth")!
+        case .chatgpt: URL(string: "https://chatgpt.com/#settings/Account")!
+        case .grok: URL(string: "https://grok.x.ai/")!
+        case .hermes: URL(string: "https://github.com/ascendmaui/notchmeter")!
+        case .openclaw: URL(string: "https://github.com/ascendmaui/notchmeter")!
         }
     }
 
@@ -729,9 +752,11 @@ enum ProviderLinks {
         switch tool {
         case .claude: URL(string: "https://status.anthropic.com")
         case .codex: URL(string: "https://status.openai.com")
+        case .chatgpt: URL(string: "https://status.openai.com")
         case .cursor: URL(string: "https://status.cursor.com")
+        case .grok: URL(string: "https://status.x.ai")
         // Neither publishes a status page this app could name with confidence.
-        case .gemini, .antigravity, .kimi, .opencode: nil
+        case .gemini, .antigravity, .kimi, .opencode, .hermes, .openclaw: nil
         case .copilot: URL(string: "https://www.githubstatus.com")
         }
     }

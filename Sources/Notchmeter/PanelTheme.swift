@@ -293,6 +293,11 @@ enum PanelInk: Hashable, Sendable {
             case .gemini: RGB(hex: 0xE36FC0)
             case .kimi: RGB(hex: 0x7ED957)
             case .opencode: RGB(hex: 0xBE3CE6)
+            // John fork assistants: ChatGPT teal distinct from Codex mint; Grok amber; Hermes indigo; OpenClaw coral.
+            case .chatgpt: RGB(hex: 0x10A37F)
+            case .grok: RGB(hex: 0xFF6B35)
+            case .hermes: RGB(hex: 0x6C5CE7)
+            case .openclaw: RGB(hex: 0xE17055)
             }
         case .companion(let tool, let index):
             RGB(hex: Self.companions(tool, paper: false)[max(0, min(1, index - 1))])
@@ -321,6 +326,10 @@ enum PanelInk: Hashable, Sendable {
             case .gemini: RGB(hex: 0xB8378F)
             case .kimi: RGB(hex: 0x367D24)
             case .opencode: RGB(hex: 0xA52ACB)
+            case .chatgpt: RGB(hex: 0x0B6E56)
+            case .grok: RGB(hex: 0xB84316)
+            case .hermes: RGB(hex: 0x4834B8)
+            case .openclaw: RGB(hex: 0xA84A32)
             }
         case .companion(let tool, let index):
             RGB(hex: Self.companions(tool, paper: true)[max(0, min(1, index - 1))])
@@ -339,6 +348,10 @@ enum PanelInk: Hashable, Sendable {
         case (.gemini, false): [0xFFB0D8, 0xC3A6FF]       // blush, soft violet
         case (.kimi, false): [0xC3F08E, 0x7FE0B5]         // pale lime, seafoam
         case (.opencode, false): [0xE59BFF, 0xF6D2FF]     // orchid, lilac
+        case (.chatgpt, false): [0x5AD1B0, 0xA8E6CF]      // mint, seafoam
+        case (.grok, false): [0xFFB088, 0xFFD166]        // peach, gold
+        case (.hermes, false): [0xA29BFE, 0xD6CCFF]       // soft indigo, lilac
+        case (.openclaw, false): [0xFAB1A0, 0xFFEAA7]     // coral, cream
         case (.claude, true): [0xB8406A, 0x8E6224]
         case (.codex, true): [0x1A7389, 0x4E7318]
         case (.cursor, true): [0xB02E8E, 0x2F63C8]
@@ -348,6 +361,10 @@ enum PanelInk: Hashable, Sendable {
         case (.gemini, true): [0xAA7590, 0x907ABC]
         case (.kimi, true): [0x728C53, 0x529075]
         case (.opencode, true): [0xA771BA, 0x937D98]
+        case (.chatgpt, true): [0x2A7A62, 0x4A8A70]
+        case (.grok, true): [0xA85A30, 0x8A6A20]
+        case (.hermes, true): [0x5A4AA8, 0x6A5A90]
+        case (.openclaw, true): [0xA06050, 0x8A7040]
         }
     }
 
