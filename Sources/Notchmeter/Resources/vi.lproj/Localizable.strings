@@ -1281,3 +1281,22 @@
 "Notchmeter's catalog of %@" = "danh mục Notchmeter ngày %@";
 "this build's table of %@" = "bảng của bản dựng này ngày %@";
 "a family guess" = "ước tính theo họ mô hình";
+
+/* ascendmaui / John ChatGPT-heavy providers */
+"ChatGPT is on this Mac, but its four weekly chat resets are not readable yet. Prefer burning empty ChatGPT weeks before other platforms; when Sol 5.6, Astra or Luna tools exist, prefer those models. See docs/john-providers.md." = "ChatGPT is on this Mac, but its four weekly chat resets are not readable yet. Prefer burning empty ChatGPT weeks before other platforms; when Sol 5.6, Astra or Luna tools exist, prefer those models. See docs/john-providers.md.";
+"Weekly reset %ld" = "Weekly reset %ld";
+"Grok / xAI is on this Mac, but standalone plan usage is not readable yet (Cursor's Grok Bot seat is already on the Cursor ring). See docs/john-providers.md." = "Grok / xAI is on this Mac, but standalone plan usage is not readable yet (Cursor's Grok Bot seat is already on the Cursor ring). See docs/john-providers.md.";
+"Hermes is on this Mac, but its usage store is not mapped yet. See docs/john-providers.md." = "Hermes is on this Mac, but its usage store is not mapped yet. See docs/john-providers.md.";
+"OpenClaw is on this Mac, but its usage store is not mapped yet. See docs/john-providers.md." = "OpenClaw is on this Mac, but its usage store is not mapped yet. See docs/john-providers.md.";
+"ChatGPT desktop / web session on this Mac. Stub: reads presence only until the four weekly reset endpoints are reverse-documented. Read only." = "ChatGPT desktop / web session on this Mac. Stub: reads presence only until the four weekly reset endpoints are reverse-documented. Read only.";
+"Grok Bot.app / SuperGrok Application Support on this Mac. Stub: presence only until xAI usage paths are documented. Read only." = "Grok Bot.app / SuperGrok Application Support on this Mac. Stub: presence only until xAI usage paths are documented. Read only.";
+"Hermes Application Support folder on this Mac. Stub: presence only. Read only." = "Hermes Application Support folder on this Mac. Stub: presence only. Read only.";
+"OpenClaw Application Support and/or OpenClaw Dashboard.app on this Mac. Stub: presence only. Read only." = "OpenClaw Application Support and/or OpenClaw Dashboard.app on this Mac. Stub: presence only. Read only.";
+"Stub: will meter ChatGPT Plus/Pro's four weekly usage resets once the vendor endpoint or desktop store is mapped. No cost dollars yet." = "Stub: will meter ChatGPT Plus/Pro's four weekly usage resets once the vendor endpoint or desktop store is mapped. No cost dollars yet.";
+"Stub: will meter standalone Grok / xAI plan windows once documented. Distinct from Cursor's Grok Bot seat. No cost dollars yet." = "Stub: will meter standalone Grok / xAI plan windows once documented. Distinct from Cursor's Grok Bot seat. No cost dollars yet.";
+"Stub: will meter Hermes local state once documented. No cost dollars yet." = "Stub: will meter Hermes local state once documented. No cost dollars yet.";
+"Stub: will meter OpenClaw local state / dashboard once documented. No cost dollars yet." = "Stub: will meter OpenClaw local state / dashboard once documented. No cost dollars yet.";
+"No hook yet for this assistant: nothing to answer from the notch." = "No hook yet for this assistant: nothing to answer from the notch.";
+"ChatGPT has %ld weekly reset(s) with room — burn those before other platforms." = "ChatGPT has %ld weekly reset(s) with room — burn those before other platforms.";
+"ChatGPT weekly resets are mostly spent; route elsewhere until the next reset." = "ChatGPT weekly resets are mostly spent; route elsewhere until the next reset.";
+"Prefer %@ for best-quality work when those tools have headroom." = "Prefer %@ for best-quality work when those tools have headroom.";

@@ -281,7 +281,7 @@ extension ToolID {
         case .claude: RGB(hex: 0xCC7555)
         case .cursor: RGB(hex: 0x8C74EA)
         case .codex: RGB(hex: 0x34A874)
-        case .gemini, .antigravity, .copilot, .kimi: RGB(hex: identity.dark)  // each above 5.8:1 on the dark window as it is
+        case .gemini, .antigravity, .copilot, .kimi, .chatgpt, .grok, .hermes, .openclaw: RGB(hex: identity.dark)
         // The notch's violet sits on top of Cursor's periwinkle once both are stepped for a window (1.6 under
         // deuteranopia), so OpenCode's window step leans to the orchid side of the same purple: 17.9 normal and 7.9
         // CVD from the dark set at 3.55:1 on its surface; the light window takes the identity's own light value, 5.5:1

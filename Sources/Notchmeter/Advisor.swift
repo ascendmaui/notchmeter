@@ -155,6 +155,7 @@ enum Advisor {
             + serverTrouble(context)
             + peak(context)
             + crossProvider(context).filter { $0.tool.map { !alreadyRouted.contains($0) } ?? true }
+            + johnRouting(context)
         // Before the cap, so a line withheld for its figures leaves room for one that has none.
         let shown = context.hidesFigures ? all.map { $0.withoutHeadroom() }.filter { !$0.carriesFigure } : all
         return withoutRepeatedHeadroom(Array(shown.enumerated()
@@ -669,6 +670,85 @@ enum Advisor {
             return measured
         }
         return Pace.secondsToRunOut(usedFraction: used, resetsAt: resetsAt, period: period, now: context.now)
+    }
+
+    // MARK: - John / ascendmaui fork routing
+
+    /// ChatGPT-heavy burn plan and Sol / Astra / Luna preference notes.
+    ///
+    /// John tracks every AI platform and leans hard on ChatGPT's four weekly resets: when ChatGPT has headroom
+    /// (or is present but not yet metered), prefer burning those weeks before other platforms. When Sol 5.6,
+    /// Astra or Luna exist as tools with readable windows, prefer those models for best-quality work
+    /// (docs/john-providers.md). Until those ToolIDs exist, this is advisory copy only.
+    static func johnRouting(_ context: Context) -> [Advice] {
+        var lines: [Advice] = []
+        let chatgpt = context.readings.first { $0.tool == .chatgpt }
+        if let reading = chatgpt {
+            let weekly = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) }
+            let empty = weekly.filter { ($0.usedFraction ?? 1) < 0.15 }
+            if !empty.isEmpty {
+                let firstEmptyLabel = empty.first?.label ?? "Weekly reset"
+                lines.append(Advice(id: "john/chatgpt-burn", tool: .chatgpt, priority: .info, symbol: "flame",
+                                    text: L("ChatGPT has %ld weekly reset(s) with room (%@ empty) — burn those before other platforms.", empty.count, firstEmptyLabel)))
+            } else if weekly.contains(where: { ($0.usedFraction ?? 0) >= 0.9 }) {
+                lines.append(Advice(id: "john/chatgpt-exhausted", tool: .chatgpt, priority: .warn, symbol: "flame",
+                                    text: L("ChatGPT weekly resets are mostly spent; route elsewhere until the next reset.")))
+            }
+        }
+        // Multi-account Antigravity rotation:
+        if let agyReading = context.readings.first(where: { $0.tool == .antigravity }),
+           let accounts = agyReading.accounts, !accounts.isEmpty {
+            let current = accounts.first(where: \.isCurrent) ?? accounts.first
+            if let cur = current {
+                if !cur.hasClaudeSessionRoom {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "claude") {
+                        lines.append(Advice(id: "john/antigravity-rotate", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Claude session is exhausted. Rotate to [%@] (%@).", cur.slot, nextSlot.slot, nextSlot.email)))
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                        let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
+                        lines.append(Advice(id: "john/antigravity-all-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
+                                            text: L("All Antigravity Claude sessions exhausted across %ld accounts. Earliest %@ ([%@]). Use Gemini models or ChatGPT.", accounts.count, resetStr, earliest.slot)))
+                    }
+                } else if let sessionWin = cur.claudeSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "claude") {
+                        var extra = ""
+                        if let r = sessionWin.resetsAt {
+                            extra = " (\(RelativeTime.resets(r, hasLimit: true, now: context.now)))"
+                        }
+                        lines.append(Advice(id: "john/antigravity-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Claude session is at %ld%%%@. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), extra, nextSlot.slot, nextSlot.email)))
+                    }
+                }
+
+                if !cur.hasGeminiSessionRoom {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "gemini") {
+                        lines.append(Advice(id: "john/antigravity-rotate-gemini", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Gemini session is exhausted. Rotate to [%@] (%@).", cur.slot, nextSlot.slot, nextSlot.email)))
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
+                        lines.append(Advice(id: "john/antigravity-all-gemini-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
+                                            text: L("All Antigravity Gemini sessions exhausted across %ld accounts. Earliest %@ ([%@]). Use Claude models or ChatGPT.", accounts.count, resetStr, earliest.slot)))
+                    }
+                } else if let sessionWin = cur.geminiSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "gemini") {
+                        var extra = ""
+                        if let r = sessionWin.resetsAt {
+                            extra = " (\(RelativeTime.resets(r, hasLimit: true, now: context.now)))"
+                        }
+                        lines.append(Advice(id: "john/antigravity-gemini-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Gemini session is at %ld%%%@. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), extra, nextSlot.slot, nextSlot.email)))
+                    }
+                }
+            }
+        }
+        // Sol / Astra / Luna: only when those ToolIDs exist and have headroom (PreferredModels). Docs carry the stub note.
+        let preferred = PreferredModels.available(in: context)
+        if !preferred.isEmpty {
+            let names = preferred.map(\.displayName).joined(separator: ", ")
+            lines.append(Advice(id: "john/preferred-models", tool: nil, priority: .info, symbol: "star.fill",
+                                text: L("Prefer %@ for best-quality work when those tools have headroom.", names)))
+        }
+        return lines
     }
 }
 

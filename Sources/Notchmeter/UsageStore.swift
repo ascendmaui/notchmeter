@@ -52,7 +52,11 @@ extension ProviderRegistry {
          CodeAssistProvider(tool: .antigravity),
          CopilotProvider(defaults: defaults),
          KimiProvider(),
-         OpenCodeProvider()]
+         OpenCodeProvider(),
+         ChatGPTProvider(),
+         GrokProvider(),
+         HermesProvider(),
+         OpenClawProvider()]
     }
 }
 

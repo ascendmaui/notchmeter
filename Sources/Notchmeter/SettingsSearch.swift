@@ -143,7 +143,7 @@ enum SettingsSearch {
         case .cursor: add(.sources, L("Also read Cursor's usage events"))
         case .copilot: add(.sources, L("Also read organisation billing"))
         case .opencode: add(.sources, L("Show sessions read from OpenCode's database"))
-        case .gemini, .antigravity, .kimi: break
+        case .gemini, .antigravity, .kimi, .chatgpt, .grok, .hermes, .openclaw: break
         }
         return rows
     }

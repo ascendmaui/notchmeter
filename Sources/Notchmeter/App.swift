@@ -1862,16 +1862,40 @@ enum Probe {
             }
             if verbose { emit("\(name): reading…") }
             do {
-                let reading = try await provider.fetch()
+                var reading = try await provider.fetch()
+                if provider.tool == .antigravity {
+                    let accounts = await AntigravityAccounts.probeAll(currentHome: Paths.home, session: NetworkSession.shared)
+                    reading = UsageReading(tool: reading.tool, windows: reading.windows, plan: reading.plan, fetchedAt: reading.fetchedAt, observedAt: reading.observedAt, accounts: accounts)
+                }
                 readings.append(reading)
                 statuses[provider.tool] = .ready(reading)
                 if verbose { emit(describe(reading)) }
             } catch let error as ProviderError {
+                if provider.tool == .antigravity {
+                    let accounts = await AntigravityAccounts.probeAll(currentHome: Paths.home, session: NetworkSession.shared)
+                    if let ready = accounts.first(where: { $0.isCurrent && $0.status == "ready" }) ?? accounts.first(where: { $0.status == "ready" }) {
+                        let reading = UsageReading(tool: .antigravity, windows: ready.windows, plan: ready.plan ?? "Pro", fetchedAt: Date(), observedAt: ready.lastActive, accounts: accounts)
+                        readings.append(reading)
+                        statuses[provider.tool] = .ready(reading)
+                        if verbose { emit(describe(reading)) }
+                        continue
+                    }
+                }
                 // The same mapping the store applies, so a 429 reads `rateLimited` here as it does from the running
                 // app's report, the local API and the MCP server, rather than `failed` with a fault to report.
                 statuses[provider.tool] = ToolStatus(error, cached: nil)
                 if verbose { emit("\(name): \(error.message)") }
             } catch {
+                if provider.tool == .antigravity {
+                    let accounts = await AntigravityAccounts.probeAll(currentHome: Paths.home, session: NetworkSession.shared)
+                    if let ready = accounts.first(where: { $0.isCurrent && $0.status == "ready" }) ?? accounts.first(where: { $0.status == "ready" }) {
+                        let reading = UsageReading(tool: .antigravity, windows: ready.windows, plan: ready.plan ?? "Pro", fetchedAt: Date(), observedAt: ready.lastActive, accounts: accounts)
+                        readings.append(reading)
+                        statuses[provider.tool] = .ready(reading)
+                        if verbose { emit(describe(reading)) }
+                        continue
+                    }
+                }
                 statuses[provider.tool] = .failed(error.localizedDescription, cached: nil)
                 if verbose { emit("\(name): \(error.localizedDescription)") }
             }
@@ -1944,6 +1968,70 @@ enum Probe {
         }
         if let observed = reading.observedAt {
             lines.append("  observed \(RelativeTime.ago(observed))")
+        }
+        if reading.tool == .antigravity, let accounts = reading.accounts, !accounts.isEmpty {
+            let readyCount = accounts.filter { $0.status == "ready" }.count
+            lines.append("  accounts: \(accounts.count) configured (\(readyCount) ready)")
+            for acct in accounts {
+                let current = acct.isCurrent ? " (current)" : ""
+                if acct.status == "ready" {
+                    let winStr = acct.windows.compactMap { w -> String? in
+                        guard let u = w.usedFraction else { return nil }
+                        var part = "\(w.label): \(Int((u * 100).rounded()))%"
+                        if let r = w.resetsAt {
+                            if u >= 0.8 || w.id.contains("session") || w.id.contains("5h") {
+                                part += " (\(RelativeTime.resets(r, hasLimit: true)))"
+                            }
+                        }
+                        return part
+                    }.joined(separator: ", ")
+                    lines.append("    [\(acct.slot)] \(acct.email)\(current): \(winStr)")
+                } else {
+                    lines.append("    [\(acct.slot)] \(acct.email)\(current): \(acct.status)")
+                }
+            }
+            let current = accounts.first(where: \.isCurrent) ?? accounts.first
+            let nextClaude = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
+            let nextGemini = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "gemini")
+            if let cur = current {
+                let claudeRoom = Int(((cur.claudeSessionRoomFraction ?? 1.0) * 100).rounded())
+                let geminiRoom = Int(((cur.geminiSessionRoomFraction ?? 1.0) * 100).rounded())
+                if !cur.hasClaudeSessionRoom && !cur.hasGeminiSessionRoom {
+                    if let next = nextClaude ?? nextGemini {
+                        lines.append("  rotation: [\(cur.slot)] all sessions exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") ?? AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        lines.append("  rotation: all Antigravity sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
+                } else if !cur.hasClaudeSessionRoom {
+                    if let next = nextClaude {
+                        lines.append("  rotation: [\(cur.slot)] Claude session exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                        lines.append("  rotation: all Claude sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
+                } else if !cur.hasGeminiSessionRoom {
+                    if let next = nextGemini {
+                        lines.append("  rotation: [\(cur.slot)] Gemini session exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        lines.append("  rotation: all Gemini sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
+                } else {
+                    let nextDesc = (nextClaude ?? nextGemini).map { "next in sequence is [\($0.slot)] (\($0.email))" } ?? ""
+                    let nextPart = nextDesc.isEmpty ? "" : "; \(nextDesc)"
+                    lines.append("  rotation: [\(cur.slot)] active with \(claudeRoom)% Claude room, \(geminiRoom)% Gemini room\(nextPart)")
+                }
+            }
+        }
+        if reading.tool == .chatgpt {
+            let weekly = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) }
+            let empty = weekly.filter { ($0.usedFraction ?? 1) < 0.15 }
+            var cgtLine = "  chatgpt-heavy: \(empty.count) of \(weekly.count) weekly resets available for burn routing (priority 1)"
+            if let active = weekly.first(where: { ($0.usedFraction ?? 0) < 0.85 }) ?? weekly.first {
+                cgtLine += " — active: \(active.label)"
+                if let resets = active.resetsAt {
+                    cgtLine += " (\(RelativeTime.resets(resets, hasLimit: true)))"
+                }
+            }
+            lines.append(cgtLine)
         }
         return lines.joined(separator: "\n")
     }
