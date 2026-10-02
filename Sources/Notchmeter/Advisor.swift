@@ -711,8 +711,12 @@ enum Advisor {
                     }
                 } else if let sessionWin = cur.claudeSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
                     if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "claude") {
+                        var extra = ""
+                        if let r = sessionWin.resetsAt {
+                            extra = " (\(RelativeTime.resets(r, hasLimit: true, now: context.now)))"
+                        }
                         lines.append(Advice(id: "john/antigravity-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
-                                            text: L("Antigravity [%@] Claude session is at %ld%%. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), nextSlot.slot, nextSlot.email)))
+                                            text: L("Antigravity [%@] Claude session is at %ld%%%@. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), extra, nextSlot.slot, nextSlot.email)))
                     }
                 }
 
@@ -727,8 +731,12 @@ enum Advisor {
                     }
                 } else if let sessionWin = cur.geminiSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
                     if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "gemini") {
+                        var extra = ""
+                        if let r = sessionWin.resetsAt {
+                            extra = " (\(RelativeTime.resets(r, hasLimit: true, now: context.now)))"
+                        }
                         lines.append(Advice(id: "john/antigravity-gemini-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
-                                            text: L("Antigravity [%@] Gemini session is at %ld%%. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), nextSlot.slot, nextSlot.email)))
+                                            text: L("Antigravity [%@] Gemini session is at %ld%%%@. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), extra, nextSlot.slot, nextSlot.email)))
                     }
                 }
             }

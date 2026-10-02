@@ -74,6 +74,12 @@ struct UsageReport {
                 raw["cost"] = nil
                 raw["history"] = nil
             }
+            if tool != .antigravity {
+                raw["antigravityAccounts"] = nil
+            }
+            if tool != .chatgpt {
+                raw["chatgptHeavy"] = nil
+            }
             return UsageReport(raw: raw)
         }
         return UsageReport(tools: tools.filter { $0.key == tool }, order: [tool], cost: tool == .claude ? cost : nil,

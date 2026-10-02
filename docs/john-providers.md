@@ -64,10 +64,18 @@ Antigravity uses slot-isolated HOME directories (`~/.agy-accounts/acctN`) or the
 - Advisor:
   - When the current slot exhausts its Claude & GPT session, `Advisor.johnRouting` advises rotating to the next ready slot (e.g. `[agy5]`). If all Claude sessions are exhausted, it advises using Gemini models or ChatGPT and reports the earliest reset time.
   - When the current slot exhausts its Gemini session, `Advisor.johnRouting` advises rotating to the next slot with Gemini room (e.g. `[agy5]`). If all Gemini sessions are exhausted, it advises using Claude models or ChatGPT and reports earliest reset.
-  - Proactively advises when the current slot Claude or Gemini session reaches >= 75% used with the upcoming rotation slot.
+  - Proactively advises when the current slot Claude or Gemini session reaches >= 75% used with the upcoming rotation slot and relative reset countdown (`(resets in Xm)`).
 - CLI & Probe formatting:
   - Displays relative reset timers (`resets in Xm` / `resets in Xh`) for session windows in slot listings.
   - Shows dual Claude and Gemini session headroom and rotation target in rotation line.
+  - Subcommands:
+    - `notchmeter accounts [--json]`: displays the configured accounts table with status, room, and session resets.
+    - `notchmeter rotation [--json]`: displays active slot, next recommended Claude/Gemini slots, and rotation advice.
+    - `notchmeter chatgpt-heavy [--json]`: displays the 4 weekly resets status table, headroom, and burn advice.
+- Local API (`http://127.0.0.1:6737`):
+  - `GET /v1/accounts`: returns `antigravityAccounts` JSON directly.
+  - `GET /v1/rotation`: returns focused rotation fields JSON directly.
+  - `GET /v1/chatgpt-heavy`: returns `chatgptHeavy` JSON directly.
 
 ## ChatGPT Four Weekly Resets & Heavy Burn
 

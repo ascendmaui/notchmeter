@@ -494,4 +494,166 @@ import Testing
         #expect(text.contains("Gemini Session: 36%"))
         #expect(text.contains("resets in"))
     }
+
+    @Test func commandLineToolSubcommandsParsed() {
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "accounts"]) == .accounts)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "--accounts"]) == .accounts)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "rotation"]) == .rotation)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "--rotation"]) == .rotation)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "chatgpt-heavy"]) == .chatgptHeavy)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "chatgpt_heavy"]) == .chatgptHeavy)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "--chatgpt-heavy"]) == .chatgptHeavy)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter", "claude"]) == nil)
+        #expect(CommandLineTool.subcommand(in: ["notchmeter"]) == nil)
+    }
+
+    @Test func commandLineToolParsedSubcommandAccountsAndRotation() throws {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.85, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.00, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.10, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.00, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4, acct5])
+        let report = UsageReport(tools: [.antigravity: .ready(reading)], order: [.antigravity], cost: nil, advice: [], now: now)
+
+        let parsedAccts = CommandLineTool.parsedSubcommand(report.json, subcommand: .accounts)
+        #expect(parsedAccts.exitCode == 0)
+        #expect(parsedAccts.text.contains("Antigravity Accounts: 2 configured (2 ready)"))
+        #expect(parsedAccts.text.contains("[agy4] ascendlifesc@gmail.com (current)"))
+        #expect(parsedAccts.text.contains("[agy5] ascendlifeinsurance@gmail.com"))
+        let acctObj = try JSONSerialization.jsonObject(with: parsedAccts.data) as? [String: Any]
+        #expect(acctObj?["signedIn"] as? Int == 2)
+
+        let parsedRotation = CommandLineTool.parsedSubcommand(report.json, subcommand: .rotation)
+        #expect(parsedRotation.exitCode == 0)
+        #expect(parsedRotation.text.contains("Antigravity Rotation:"))
+        #expect(parsedRotation.text.contains("Active slot: [agy4] (ascendlifesc@gmail.com)"))
+        #expect(parsedRotation.text.contains("Next Gemini slot: [agy5]"))
+        let rotObj = try JSONSerialization.jsonObject(with: parsedRotation.data) as? [String: Any]
+        #expect(rotObj?["activeSlot"] as? String == "agy4")
+        #expect(rotObj?["recommendedNextGeminiSlot"] as? String == "agy5")
+    }
+
+    @Test func commandLineToolParsedSubcommandChatGPTHeavy() throws {
+        let now = Date()
+        let windows = [
+            LimitWindow(id: "chatgpt_week_1", label: "Weekly reset 1", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400)),
+            LimitWindow(id: "chatgpt_week_2", label: "Weekly reset 2", usedFraction: 0.50, resetsAt: now.addingTimeInterval(86400 * 2)),
+            LimitWindow(id: "chatgpt_week_3", label: "Weekly reset 3", usedFraction: 0.95, resetsAt: now.addingTimeInterval(86400 * 3)),
+            LimitWindow(id: "chatgpt_week_4", label: "Weekly reset 4", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 4)),
+        ]
+        let reading = UsageReading(tool: .chatgpt, windows: windows, plan: "Plus", fetchedAt: now, observedAt: nil)
+        let report = UsageReport(tools: [.chatgpt: .ready(reading)], order: [.chatgpt], cost: nil, advice: [], now: now)
+
+        let parsed = CommandLineTool.parsedSubcommand(report.json, subcommand: .chatgptHeavy)
+        #expect(parsed.exitCode == 0)
+        #expect(parsed.text.contains("ChatGPT-Heavy Burn Routing (Priority 1):"))
+        #expect(parsed.text.contains("Available weekly resets: 2 of 4"))
+        #expect(parsed.text.contains("Active reset: Weekly reset 1"))
+        #expect(parsed.text.contains("Weekly reset 1: 0% used, 100% headroom (empty"))
+        #expect(parsed.text.contains("Weekly reset 3: 95% used, 5% headroom (burned"))
+
+        let cgtObj = try JSONSerialization.jsonObject(with: parsed.data) as? [String: Any]
+        #expect(cgtObj?["totalResets"] as? Int == 4)
+        #expect(cgtObj?["emptyResets"] as? Int == 2)
+    }
+
+    @MainActor @Test func localAPIServesAccountsRotationAndChatGPTHeavy() throws {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.50, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.00, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let agyReading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4])
+        let cgtWindows = [
+            LimitWindow(id: "chatgpt_week_1", label: "Weekly reset 1", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400)),
+            LimitWindow(id: "chatgpt_week_2", label: "Weekly reset 2", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 2)),
+            LimitWindow(id: "chatgpt_week_3", label: "Weekly reset 3", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 3)),
+            LimitWindow(id: "chatgpt_week_4", label: "Weekly reset 4", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 4)),
+        ]
+        let cgtReading = UsageReading(tool: .chatgpt, windows: cgtWindows, plan: "Plus", fetchedAt: now, observedAt: nil)
+        let report = UsageReport(tools: [.antigravity: .ready(agyReading), .chatgpt: .ready(cgtReading)], order: [.antigravity, .chatgpt], cost: nil, advice: [], now: now)
+
+        let api = LocalAPI(port: 6737, allowedOrigins: { [] }, report: { report })
+
+        let acctsResp = String(decoding: api.respond(to: LocalAPI.Request(method: "GET", path: "/v1/accounts", headers: ["host": "127.0.0.1:6737"], body: Data())), as: UTF8.self)
+        #expect(acctsResp.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(acctsResp.contains("\"ascendlifesc@gmail.com\""))
+
+        let rotResp = String(decoding: api.respond(to: LocalAPI.Request(method: "GET", path: "/v1/rotation", headers: ["host": "127.0.0.1:6737"], body: Data())), as: UTF8.self)
+        #expect(rotResp.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(rotResp.contains("\"activeSlot\" : \"agy4\""))
+
+        let cgtResp = String(decoding: api.respond(to: LocalAPI.Request(method: "GET", path: "/v1/chatgpt-heavy", headers: ["host": "127.0.0.1:6737"], body: Data())), as: UTF8.self)
+        #expect(cgtResp.hasPrefix("HTTP/1.1 200 OK"))
+        #expect(cgtResp.contains("\"burnPriority\" : 1"))
+    }
+
+    @Test func usageReportLimitedCleansUpJohnFieldsForUnrelatedTools() throws {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.10, resetsAt: now.addingTimeInterval(3600))
+            ]
+        )
+        let agyReading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4])
+        let cgtWindows = [
+            LimitWindow(id: "chatgpt_week_1", label: "Weekly reset 1", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400)),
+            LimitWindow(id: "chatgpt_week_2", label: "Weekly reset 2", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 2)),
+            LimitWindow(id: "chatgpt_week_3", label: "Weekly reset 3", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 3)),
+            LimitWindow(id: "chatgpt_week_4", label: "Weekly reset 4", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 4)),
+        ]
+        let cgtReading = UsageReading(tool: .chatgpt, windows: cgtWindows, plan: "Plus", fetchedAt: now, observedAt: nil)
+        let full = UsageReport(tools: [.antigravity: .ready(agyReading), .chatgpt: .ready(cgtReading)], order: [.antigravity, .chatgpt], cost: nil, advice: [], now: now)
+
+        let decoded = try #require(UsageReport.decode(full.json))
+
+        let claudeLimited = decoded.limited(to: .claude)
+        #expect(claudeLimited.object["antigravityAccounts"] == nil)
+        #expect(claudeLimited.object["chatgptHeavy"] == nil)
+
+        let agyLimited = decoded.limited(to: .antigravity)
+        #expect(agyLimited.object["antigravityAccounts"] != nil)
+        #expect(agyLimited.object["chatgptHeavy"] == nil)
+
+        let cgtLimited = decoded.limited(to: .chatgpt)
+        #expect(cgtLimited.object["antigravityAccounts"] == nil)
+        #expect(cgtLimited.object["chatgptHeavy"] != nil)
+    }
+
+    @Test func antigravityProactiveSessionClosingContainsCountdown() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.80, resetsAt: now.addingTimeInterval(1200))
+            ]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4, acct5])
+        let context = Advisor.Context(readings: [reading], toolOrder: ToolID.allCases, now: now)
+        let advice = Advisor.johnRouting(context)
+        let closing = advice.first { $0.id == "john/antigravity-session-closing" }
+        #expect(closing != nil)
+        #expect(closing?.text.contains("resets in 20m") == true)
+    }
 }
