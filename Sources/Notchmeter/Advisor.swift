@@ -714,7 +714,6 @@ enum Advisor {
                                             text: "Antigravity [\(cur.slot)] Claude session is at \(Int((used * 100).rounded()))%. Next in rotation: [\(nextSlot.slot)] (\(nextSlot.email))."))
                     }
                 }
-                }
             }
         }
         // Sol / Astra / Luna: only when those ToolIDs exist and have headroom (PreferredModels). Docs carry the stub note.

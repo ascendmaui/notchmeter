@@ -84,13 +84,13 @@ struct ChatGPTProvider: UsageProvider {
         }
     }
 
-    /// Loads the four weekly windows from env override, local json file, or defaults to stub windows.
-    func loadWindows(now: Date = Date()) -> [LimitWindow] {
-        var customOffsets: [TimeInterval]?
-        if let resetEnv = ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_RESET_HOURS"] {
+    /// Loads override windows from environment variable or local usage file if configured.
+    func loadOverrideWindows(now: Date = Date(), customOffsets: [TimeInterval]? = nil) -> [LimitWindow]? {
+        var offsets = customOffsets
+        if offsets == nil, let resetEnv = ProcessInfo.processInfo.environment["NOTCHMETER_CHATGPT_RESET_HOURS"] {
             let hours = resetEnv.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             if !hours.isEmpty {
-                customOffsets = hours.map { $0 * 3600 }
+                offsets = hours.map { $0 * 3600 }
             }
         }
         // 1. Check environment variable override: NOTCHMETER_CHATGPT_USAGE="0.0,0.1,0.0,0.0"
@@ -99,8 +99,8 @@ struct ChatGPTProvider: UsageProvider {
             if !fractions.isEmpty {
                 return Self.weeklyWindowIDs.enumerated().map { index, id in
                     let used = index < fractions.count ? min(max(fractions[index], 0), 1) : 0
-                    let resetOffset = (customOffsets != nil && index < customOffsets!.count)
-                        ? customOffsets![index]
+                    let resetOffset = (offsets != nil && index < offsets!.count)
+                        ? offsets![index]
                         : Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0
                     return LimitWindow(id: id,
                                        label: .filled("Weekly reset %ld", [.number(index + 1)]),
@@ -126,8 +126,12 @@ struct ChatGPTProvider: UsageProvider {
             }
         }
 
-        // 3. Fallback to stub windows (empty, ready for heavy burn)
-        return Self.stubWindows(now: now, customOffsets: customOffsets)
+        return nil
+    }
+
+    /// Loads the four weekly windows from env override, local json file, or defaults to stub windows.
+    func loadWindows(now: Date = Date(), customOffsets: [TimeInterval]? = nil) -> [LimitWindow] {
+        loadOverrideWindows(now: now, customOffsets: customOffsets) ?? Self.stubWindows(now: now, customOffsets: customOffsets)
     }
 
     /// Parses a custom chatgpt-usage.json file.
