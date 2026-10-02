@@ -359,4 +359,139 @@ import Testing
         #expect(agyTool["activeEmail"] as? String == "ascendlifesc@gmail.com")
         #expect(agyTool["earliestClaudeResetsInSeconds"] as? Int == 3600)
     }
+
+    @Test func antigravityGeminiRotationAdvice() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 1.0, resetsAt: now.addingTimeInterval(1200))
+            ]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(7200)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.1, resetsAt: now.addingTimeInterval(5400))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4, acct5])
+        let context = Advisor.Context(readings: [reading], toolOrder: ToolID.allCases, now: now)
+        let advice = Advisor.johnRouting(context)
+        #expect(advice.contains { $0.id == "john/antigravity-rotate-gemini" })
+
+        // Proactive session closing advice for Gemini at >= 75%
+        let acct4Near = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.80, resetsAt: now.addingTimeInterval(1200))
+            ]
+        )
+        let readingNear = UsageReading(tool: .antigravity, windows: acct4Near.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4Near, acct5])
+        let contextNear = Advisor.Context(readings: [readingNear], toolOrder: ToolID.allCases, now: now)
+        let adviceNear = Advisor.johnRouting(contextNear)
+        #expect(adviceNear.contains { $0.id == "john/antigravity-gemini-session-closing" })
+    }
+
+    @Test func antigravityReportGeminiRotationFields() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.05, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 1.0, resetsAt: now.addingTimeInterval(1200))
+            ]
+        )
+        let acct5 = AntigravityAccount(
+            slot: "agy5", index: 5, email: "ascendlifeinsurance@gmail.com", homeDirectory: "/tmp/acct5", isCurrent: false, status: "ready",
+            windows: [
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.0, resetsAt: now.addingTimeInterval(7200)),
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.1, resetsAt: now.addingTimeInterval(5400))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4, acct5])
+        let report = UsageReport(tools: [.antigravity: .ready(reading)], order: [.antigravity], cost: nil, advice: [], now: now)
+        let object = report.object
+
+        guard let agyAccounts = object["antigravityAccounts"] as? [String: Any] else {
+            Issue.record("antigravityAccounts missing in report object")
+            return
+        }
+        #expect(agyAccounts["recommendedNextGeminiSlot"] as? String == "agy5")
+        #expect(agyAccounts["recommendedNextGeminiEmail"] as? String == "ascendlifeinsurance@gmail.com")
+        #expect(agyAccounts["claudeRotationAdvice"] as? String != nil)
+        #expect(agyAccounts["geminiRotationAdvice"] as? String != nil)
+        #expect(agyAccounts["activeGeminiSessionResetsInSeconds"] as? Int == 1200)
+        #expect(agyAccounts["activeClaudeSessionResetsInSeconds"] as? Int == 3600)
+
+        guard let tools = object["tools"] as? [[String: Any]], let agyTool = tools.first(where: { $0["tool"] as? String == "antigravity" }) else {
+            Issue.record("antigravity tool object missing")
+            return
+        }
+        #expect(agyTool["recommendedNextGeminiSlot"] as? String == "agy5")
+        #expect(agyTool["geminiRotationAdvice"] as? String != nil)
+        #expect(agyTool["activeGeminiSessionResetsInSeconds"] as? Int == 1200)
+    }
+
+    @Test func chatgptHeavyDetailedWindowsInReport() {
+        let now = Date()
+        let windows = [
+            LimitWindow(id: "chatgpt_week_1", label: "Weekly reset 1", usedFraction: 0.10, resetsAt: now.addingTimeInterval(86400)),
+            LimitWindow(id: "chatgpt_week_2", label: "Weekly reset 2", usedFraction: 0.50, resetsAt: now.addingTimeInterval(86400 * 2)),
+            LimitWindow(id: "chatgpt_week_3", label: "Weekly reset 3", usedFraction: 0.90, resetsAt: now.addingTimeInterval(86400 * 3)),
+            LimitWindow(id: "chatgpt_week_4", label: "Weekly reset 4", usedFraction: 0.00, resetsAt: now.addingTimeInterval(86400 * 4))
+        ]
+        let reading = UsageReading(tool: .chatgpt, windows: windows, plan: "Plus/Pro (4 weekly resets)", fetchedAt: now, observedAt: nil)
+        let report = UsageReport(tools: [.chatgpt: .ready(reading)], order: [.chatgpt], cost: nil, advice: [], now: now)
+        let object = report.object
+
+        guard let chatgptHeavy = object["chatgptHeavy"] as? [String: Any] else {
+            Issue.record("chatgptHeavy missing in report object")
+            return
+        }
+        #expect(chatgptHeavy["activeWindowID"] as? String == "chatgpt_week_1")
+        #expect(chatgptHeavy["activeWindowUsedFraction"] as? Double == 0.10)
+        #expect(chatgptHeavy["activeWindowResetsInSeconds"] as? Int == 86400)
+        guard let winList = chatgptHeavy["windows"] as? [[String: Any]] else {
+            Issue.record("windows list missing in chatgptHeavy")
+            return
+        }
+        #expect(winList.count == 4)
+        #expect(winList[0]["status"] as? String == "empty")
+        #expect(winList[1]["status"] as? String == "inProgress")
+        #expect(winList[2]["status"] as? String == "burned")
+        #expect(winList[3]["status"] as? String == "empty")
+
+        guard let tools = object["tools"] as? [[String: Any]], let chatgptTool = tools.first(where: { $0["tool"] as? String == "chatgpt" }) else {
+            Issue.record("chatgpt tool object missing")
+            return
+        }
+        #expect(chatgptTool["activeWindowResetsInSeconds"] as? Int == 86400)
+        #expect(chatgptTool["activeWindowUsedFraction"] as? Double == 0.10)
+        guard let toolResets = chatgptTool["resets"] as? [[String: Any]] else {
+            Issue.record("resets array missing in chatgpt tool object")
+            return
+        }
+        #expect(toolResets.count == 4)
+    }
+
+    @Test func commandLineToolFormattingIncludesSessionResets() {
+        let now = Date()
+        let acct4 = AntigravityAccount(
+            slot: "agy4", index: 4, email: "ascendlifesc@gmail.com", homeDirectory: "/tmp/acct4", isCurrent: true, status: "ready",
+            windows: [
+                LimitWindow(id: "gemini_session", label: "Gemini Session", usedFraction: 0.36, resetsAt: now.addingTimeInterval(3600)),
+                LimitWindow(id: "claude_and_gpt_session", label: "Claude Session", usedFraction: 0.00, resetsAt: now.addingTimeInterval(7200))
+            ]
+        )
+        let reading = UsageReading(tool: .antigravity, windows: acct4.windows, plan: "Pro", fetchedAt: now, observedAt: nil, accounts: [acct4])
+        let report = UsageReport(tools: [.antigravity: .ready(reading)], order: [.antigravity], cost: nil, advice: [], now: now)
+        let text = CommandLineTool.describe(report.object)
+
+        #expect(text.contains("[agy4] ascendlifesc@gmail.com (current)"))
+        #expect(text.contains("Gemini Session: 36%"))
+        #expect(text.contains("resets in"))
+    }
 }

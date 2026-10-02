@@ -47,18 +47,27 @@ Antigravity uses slot-isolated HOME directories (`~/.agy-accounts/acctN`) or the
     - `rotationOrder`: `["agy", "agy6", "agy3", "agy2", "agy4", "agy5", "agy7"]`
     - `claudeAvailableCount`: slots with Claude & GPT session headroom
     - `geminiAvailableCount`: slots with Gemini session headroom
-    - `recommendedNextSlot`: next slot in rotation order with headroom
-    - `recommendedNextEmail`: email of recommended slot
-    - `rotationAdvice`: human & agent readable guidance string
+    - `recommendedNextSlot` / `recommendedNextClaudeSlot`: next slot in rotation order with Claude headroom
+    - `recommendedNextEmail` / `recommendedNextClaudeEmail`: email of recommended Claude slot
+    - `recommendedNextGeminiSlot`: next slot in rotation order with Gemini headroom
+    - `recommendedNextGeminiEmail`: email of recommended Gemini slot
+    - `rotationAdvice`: human & agent readable guidance string combining Claude and Gemini headroom
+    - `claudeRotationAdvice`: specific Claude session rotation guidance
+    - `geminiRotationAdvice`: specific Gemini session rotation guidance
+    - `activeClaudeSessionResetsInSeconds` & `activeGeminiSessionResetsInSeconds`: exact reset timers for active slot
     - `earliestClaudeResetSlot`, `earliestClaudeResetAt`, `earliestClaudeResetsInSeconds`: earliest Claude session reset across accounts
     - `earliestGeminiResetSlot`, `earliestGeminiResetAt`, `earliestGeminiResetsInSeconds`: earliest Gemini session reset across accounts
     - `slots`: array of slot objects with `slot`, `email`, `status`, `isCurrent`, `hasClaudeRoom`, `hasGeminiRoom`, `claudeSessionRoom`, `geminiSessionRoom`, `claudeSessionUsed`, `claudeSessionResetsAt`, `claudeSessionResetsInSeconds`, `geminiSessionUsed`, `geminiSessionResetsAt`, `geminiSessionResetsInSeconds`, `claudeWeeklyUsed`, `claudeWeeklyResetsAt`, `geminiWeeklyUsed`, `geminiWeeklyResetsAt`
   - Under `tools[antigravity]`:
-    - `accountCount`, `signedInCount`, `currentSlot`, `currentEmail`, `activeSlot`, `activeEmail`, `activeHasClaudeRoom`, `activeHasGeminiRoom`, `recommendedNextSlot`, `recommendedNextEmail`, `claudeAvailableCount`, `geminiAvailableCount`, `earliestClaudeResetSlot`, `earliestClaudeResetAt`, `earliestClaudeResetsInSeconds`
+    - `accountCount`, `signedInCount`, `currentSlot`, `currentEmail`, `activeSlot`, `activeEmail`, `activeHasClaudeRoom`, `activeHasGeminiRoom`, `recommendedNextSlot`, `recommendedNextEmail`, `recommendedNextClaudeSlot`, `recommendedNextClaudeEmail`, `recommendedNextGeminiSlot`, `recommendedNextGeminiEmail`, `claudeAvailableCount`, `geminiAvailableCount`, `claudeRotationAdvice`, `geminiRotationAdvice`, `activeClaudeSessionResetsInSeconds`, `activeGeminiSessionResetsInSeconds`, `earliestClaudeResetSlot`, `earliestClaudeResetAt`, `earliestClaudeResetsInSeconds`, `earliestGeminiResetSlot`, `earliestGeminiResetAt`, `earliestGeminiResetsInSeconds`
     - `accounts`: full array of accounts with per-window usage fractions, headroom fractions, and ISO8601 reset timestamps
 - Advisor:
-  - When the current slot exhausts its Claude & GPT session, `Advisor.johnRouting` advises rotating to the next ready slot (e.g. `[agy5]`). If all are exhausted, it advises using Gemini models or ChatGPT and reports the earliest reset time.
-  - Proactively advises when the current slot Claude session reaches >= 75% used with the upcoming rotation slot.
+  - When the current slot exhausts its Claude & GPT session, `Advisor.johnRouting` advises rotating to the next ready slot (e.g. `[agy5]`). If all Claude sessions are exhausted, it advises using Gemini models or ChatGPT and reports the earliest reset time.
+  - When the current slot exhausts its Gemini session, `Advisor.johnRouting` advises rotating to the next slot with Gemini room (e.g. `[agy5]`). If all Gemini sessions are exhausted, it advises using Claude models or ChatGPT and reports earliest reset.
+  - Proactively advises when the current slot Claude or Gemini session reaches >= 75% used with the upcoming rotation slot.
+- CLI & Probe formatting:
+  - Displays relative reset timers (`resets in Xm` / `resets in Xh`) for session windows in slot listings.
+  - Shows dual Claude and Gemini session headroom and rotation target in rotation line.
 
 ## ChatGPT Four Weekly Resets & Heavy Burn
 
@@ -71,8 +80,12 @@ Antigravity uses slot-isolated HOME directories (`~/.agy-accounts/acctN`) or the
 - `inProgressResetsCount: N`
 - `activeWindowID`: ID of first available weekly reset (e.g. `chatgpt_week_1`)
 - `activeWindowLabel`: clean label string of active reset (e.g. "Weekly reset 1")
+- `activeWindowResetsAt`: ISO8601 reset timestamp of active reset
+- `activeWindowResetsInSeconds`: seconds until active reset refreshes
+- `activeWindowUsedFraction`: used fraction of active window
 - `emptyWindowIDs`: list of unspent weekly reset IDs
 - `headroomFractions`: array of remaining room per weekly reset
+- `windows`: array of all 4 reset windows with `id`, `label`, `usedFraction`, `headroomFraction`, `status` (`empty`, `inProgress`, `burned`), `resetsAt`, `resetsInSeconds`
 - `nextResetAt` & `nextResetInSeconds`: earliest reset timestamp and seconds
 - `burnAdvice`: routing guidance (e.g. "Burn Weekly reset 1 (empty, priority 1)")
 - `Advisor.johnRouting` automatically prioritizes burning empty ChatGPT weekly resets before other platforms.

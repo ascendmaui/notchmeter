@@ -715,6 +715,22 @@ enum Advisor {
                                             text: L("Antigravity [%@] Claude session is at %ld%%. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), nextSlot.slot, nextSlot.email)))
                     }
                 }
+
+                if !cur.hasGeminiSessionRoom {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "gemini") {
+                        lines.append(Advice(id: "john/antigravity-rotate-gemini", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Gemini session is exhausted. Rotate to [%@] (%@).", cur.slot, nextSlot.slot, nextSlot.email)))
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
+                        lines.append(Advice(id: "john/antigravity-all-gemini-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
+                                            text: L("All Antigravity Gemini sessions exhausted across %ld accounts. Earliest %@ ([%@]). Use Claude models or ChatGPT.", accounts.count, resetStr, earliest.slot)))
+                    }
+                } else if let sessionWin = cur.geminiSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "gemini") {
+                        lines.append(Advice(id: "john/antigravity-gemini-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
+                                            text: L("Antigravity [%@] Gemini session is at %ld%%. Next in rotation: [%@] (%@).", cur.slot, Int((used * 100).rounded()), nextSlot.slot, nextSlot.email)))
+                    }
+                }
             }
         }
         // Sol / Astra / Luna: only when those ToolIDs exist and have headroom (PreferredModels). Docs carry the stub note.

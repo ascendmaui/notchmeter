@@ -1978,8 +1978,10 @@ enum Probe {
                     let winStr = acct.windows.compactMap { w -> String? in
                         guard let u = w.usedFraction else { return nil }
                         var part = "\(w.label): \(Int((u * 100).rounded()))%"
-                        if u >= 0.95, let r = w.resetsAt {
-                            part += " (\(RelativeTime.resets(r, hasLimit: true)))"
+                        if let r = w.resetsAt {
+                            if u >= 0.8 || w.id.contains("session") || w.id.contains("5h") {
+                                part += " (\(RelativeTime.resets(r, hasLimit: true)))"
+                            }
                         }
                         return part
                     }.joined(separator: ", ")
@@ -1989,19 +1991,33 @@ enum Probe {
                 }
             }
             let current = accounts.first(where: \.isCurrent) ?? accounts.first
-            let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
-            if let cur = current, !cur.hasClaudeSessionRoom {
-                if let next = nextSlot {
-                    lines.append("  rotation: [\(cur.slot)] Claude session exhausted; rotate to [\(next.slot)] (\(next.email))")
-                } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
-                    lines.append("  rotation: all Claude sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
-                }
-            } else if let cur = current {
-                let room = Int(((cur.claudeSessionRoomFraction ?? 1.0) * 100).rounded())
-                if let next = nextSlot {
-                    lines.append("  rotation: [\(cur.slot)] active with \(room)% Claude room; next in sequence is [\(next.slot)] (\(next.email))")
+            let nextClaude = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
+            let nextGemini = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "gemini")
+            if let cur = current {
+                let claudeRoom = Int(((cur.claudeSessionRoomFraction ?? 1.0) * 100).rounded())
+                let geminiRoom = Int(((cur.geminiSessionRoomFraction ?? 1.0) * 100).rounded())
+                if !cur.hasClaudeSessionRoom && !cur.hasGeminiSessionRoom {
+                    if let next = nextClaude ?? nextGemini {
+                        lines.append("  rotation: [\(cur.slot)] all sessions exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") ?? AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        lines.append("  rotation: all Antigravity sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
+                } else if !cur.hasClaudeSessionRoom {
+                    if let next = nextClaude {
+                        lines.append("  rotation: [\(cur.slot)] Claude session exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                        lines.append("  rotation: all Claude sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
+                } else if !cur.hasGeminiSessionRoom {
+                    if let next = nextGemini {
+                        lines.append("  rotation: [\(cur.slot)] Gemini session exhausted; rotate to [\(next.slot)] (\(next.email))")
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "gemini") {
+                        lines.append("  rotation: all Gemini sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                    }
                 } else {
-                    lines.append("  rotation: [\(cur.slot)] active with \(room)% Claude room")
+                    let nextDesc = (nextClaude ?? nextGemini).map { "next in sequence is [\($0.slot)] (\($0.email))" } ?? ""
+                    let nextPart = nextDesc.isEmpty ? "" : "; \(nextDesc)"
+                    lines.append("  rotation: [\(cur.slot)] active with \(claudeRoom)% Claude room, \(geminiRoom)% Gemini room\(nextPart)")
                 }
             }
         }

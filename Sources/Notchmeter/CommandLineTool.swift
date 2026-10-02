@@ -130,8 +130,11 @@ enum CommandLineTool {
                         let winSummaries = wins.compactMap { w -> String? in
                             guard let label = w["label"] as? String, let used = JSON.number(w["usedFraction"]) else { return nil }
                             var part = "\(label): \(Int((used * 100).rounded()))%"
-                            if used >= 0.95, let resetsStr = w["resetsAt"] as? String, let date = DateParsing.iso8601(resetsStr) {
-                                part += " (\(RelativeTime.resets(date, hasLimit: true)))"
+                            let wid = (w["id"] as? String) ?? ""
+                            if let resetsStr = w["resetsAt"] as? String, let date = DateParsing.iso8601(resetsStr) {
+                                if used >= 0.8 || wid.contains("session") || wid.contains("5h") {
+                                    part += " (\(RelativeTime.resets(date, hasLimit: true)))"
+                                }
                             }
                             return part
                         }.joined(separator: ", ")
@@ -146,12 +149,17 @@ enum CommandLineTool {
                     lines.append("  rotation: next recommended slot is [\(nextSlot)] (\(nextEmail))")
                 } else if let resetSlot = tool["earliestClaudeResetSlot"] as? String, let resetAtStr = tool["earliestClaudeResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
                     lines.append("  rotation: all Claude sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
+                } else if let resetSlot = tool["earliestGeminiResetSlot"] as? String, let resetAtStr = tool["earliestGeminiResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
+                    lines.append("  rotation: all Gemini sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
                 }
             }
             if tool["tool"] as? String == "chatgpt", let empty = tool["emptyResetsCount"] as? Int, let total = tool["weeklyResetsCount"] as? Int {
                 var cgtLine = "  chatgpt-heavy: \(empty) of \(total) weekly resets available for burn routing (priority 1)"
                 if let activeLabel = tool["activeWindowLabel"] as? String {
                     cgtLine += " — active: \(activeLabel)"
+                    if let resetStr = tool["activeWindowResetsAt"] as? String, let resetDate = DateParsing.iso8601(resetStr) {
+                        cgtLine += " (\(RelativeTime.resets(resetDate, hasLimit: true)))"
+                    }
                 }
                 lines.append(cgtLine)
                 if let burnAdvice = tool["burnAdvice"] as? String {
