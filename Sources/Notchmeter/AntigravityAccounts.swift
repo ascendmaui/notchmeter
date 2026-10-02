@@ -263,7 +263,7 @@ enum AntigravityAccounts {
                                       homeDirectory: slot.homeURL.path,
                                       isCurrent: slot.isCurrent,
                                       status: "needsSignIn",
-                                      problem: L("Not signed in; run %1$@ to sign in", slot.slot),
+                                      problem: "Not signed in; run \(slot.slot) to sign in",
                                       plan: nil,
                                       windows: [],
                                       lastActive: lastActive)
@@ -277,7 +277,7 @@ enum AntigravityAccounts {
                                       homeDirectory: slot.homeURL.path,
                                       isCurrent: slot.isCurrent,
                                       status: "needsSignIn",
-                                      problem: L("Invalid credentials file in %1$@", slot.slot),
+                                      problem: "Invalid credentials file in \(slot.slot)",
                                       plan: nil,
                                       windows: [],
                                       lastActive: lastActive)
@@ -290,7 +290,7 @@ enum AntigravityAccounts {
                                       homeDirectory: slot.homeURL.path,
                                       isCurrent: slot.isCurrent,
                                       status: "tokenExpired",
-                                      problem: L("Token expired; run %1$@ to re-authenticate", slot.slot),
+                                      problem: "Token expired; run \(slot.slot) to re-authenticate",
                                       plan: nil,
                                       windows: [],
                                       lastActive: lastActive)
@@ -330,7 +330,7 @@ enum AntigravityAccounts {
                                               homeDirectory: slot.homeURL.path,
                                               isCurrent: slot.isCurrent,
                                               status: "tokenExpired",
-                                              problem: L("Token rejected (401); run %1$@ to re-authenticate", slot.slot),
+                                              problem: "Token rejected (401); run \(slot.slot) to re-authenticate",
                                               plan: nil,
                                               windows: [],
                                               lastActive: lastActive)
@@ -341,7 +341,7 @@ enum AntigravityAccounts {
                                               homeDirectory: slot.homeURL.path,
                                               isCurrent: slot.isCurrent,
                                               status: "emptyQuota",
-                                              problem: L("Quota exhausted or license invalid (403)", slot.slot),
+                                              problem: "Quota exhausted or license invalid (403)",
                                               plan: nil,
                                               windows: [],
                                               lastActive: lastActive)
@@ -358,7 +358,7 @@ enum AntigravityAccounts {
                                   homeDirectory: slot.homeURL.path,
                                   isCurrent: slot.isCurrent,
                                   status: "offline",
-                                  problem: L("Unable to reach Google Code Assist endpoint"),
+                                  problem: "Unable to reach Google Code Assist endpoint",
                                   plan: nil,
                                   windows: [],
                                   lastActive: lastActive)

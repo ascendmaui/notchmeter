@@ -181,7 +181,7 @@ actor CodeAssistProvider: UsageProvider {
         }
         guard let data = credData else {
             throw ProviderError.notSignedIn(tool == .antigravity
-                ? L("Antigravity keeps its own login in ~/.gemini/antigravity-cli/antigravity-oauth-token or the Keychain; sign in to Gemini CLI or run `agy` to read its quota")
+                ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
                 : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota"))
         }
         let credentials = try Self.parseCredentials(data)
@@ -296,7 +296,7 @@ actor CodeAssistProvider: UsageProvider {
 
     static func parseCredentials(_ data: Data) throws -> CodeAssistCredentials {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ProviderError.notSignedIn(L("Code Assist credentials unreadable"))
+            throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
         }
         // Format 1: antigravity-oauth-token: { "token": { "access_token": "ya29...", ... }, "id_token": "..." }
         if let tokenObj = root["token"] as? [String: Any],

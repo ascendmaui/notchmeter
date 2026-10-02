@@ -71,7 +71,7 @@ struct ChatGPTProvider: UsageProvider {
                         label: .filled("Weekly reset %ld", [.number(index + 1)]),
                         usedFraction: 0,
                         resetsAt: now.addingTimeInterval(Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0),
-                        note: L("Four weekly resets reserved; prefer burning empty weeks before other platforms"),
+                        note: "Four weekly resets reserved; prefer burning empty weeks before other platforms",
                         periodDuration: Period.week,
                         source: .localEstimate,
                         hiddenByDefault: false)
@@ -90,7 +90,7 @@ struct ChatGPTProvider: UsageProvider {
                                        label: .filled("Weekly reset %ld", [.number(index + 1)]),
                                        usedFraction: used,
                                        resetsAt: now.addingTimeInterval(Double(index + 1) * (Period.week / 4.0) + Period.week / 2.0),
-                                       note: L("Configured via NOTCHMETER_CHATGPT_USAGE"),
+                                       note: "Configured via NOTCHMETER_CHATGPT_USAGE",
                                        periodDuration: Period.week,
                                        source: .localEstimate,
                                        hiddenByDefault: false)
@@ -121,7 +121,7 @@ struct ChatGPTProvider: UsageProvider {
     /// Parses a custom chatgpt-usage.json file.
     static func parseUsageFile(_ data: Data, now: Date = Date()) throws -> [LimitWindow] {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ProviderError.parse(L("ChatGPT usage file unreadable"))
+            throw ProviderError.parse("ChatGPT usage file unreadable")
         }
         var windows: [LimitWindow] = []
         if let weeks = root["weeks"] as? [Double] {
