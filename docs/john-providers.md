@@ -37,26 +37,35 @@ Antigravity uses slot-isolated HOME directories (`~/.agy-accounts/acctN`) or the
 - Default slot: `agy` (`~/.gemini/antigravity-cli`)
 - Multi-account slots: `agy2` through `agy7` in `~/.agy-accounts/acct*`
 - Rotation order: `agy`, `agy6` (powerevllc), `agy3` (503meds), `agy2` (ascendmaui), `agy4` (ascendlifesc), `agy5` (ascendlifeinsurance), `agy7` (jvmsalesllc)
-- Extract Google account email from `ACCOUNT_EMAIL` or unencrypted `id_token` JWT payload
+- Circular rotation sequence: `recommendedNextSlot(accounts:startingAfter:)` preserves progression forward from the active slot (`agy4` -> `agy5` -> `agy7` -> `agy` -> `agy6` -> `agy3` -> `agy2`)
+- Host auto-resolution: inspects each slot's `cli.log` to use the metered endpoint (`daily-cloudcode-pa.googleapis.com` vs `cloudcode-pa.googleapis.com`) and prioritizes metered responses over placeholder responses
+- Extracts Google account email from `ACCOUNT_EMAIL` or unencrypted `id_token` JWT claims
 - Concurrently queries Google Code Assist (`retrieveUserQuotaSummary`) for 5h session and 7d weekly windows
 - Report fields in `--probe --json`:
   - `antigravityAccounts`:
     - `total`: total slots configured
     - `signedIn`: slots with valid tokens
-    - `currentSlot`: active slot (e.g. `agy4`)
-    - `currentEmail`: active account email
+    - `currentSlot` / `activeSlot`: active slot (e.g. `agy4`)
+    - `currentEmail` / `activeEmail`: active account email
+    - `activeHasClaudeRoom`: whether active slot Claude session is < 95% used
+    - `activeHasGeminiRoom`: whether active slot Gemini session is < 95% used
+    - `activeClaudeSessionUsed` & `activeClaudeSessionResetsAt`: live active slot session figures
+    - `activeGeminiSessionUsed` & `activeGeminiSessionResetsAt`: live active slot session figures
     - `rotationOrder`: `["agy", "agy6", "agy3", "agy2", "agy4", "agy5", "agy7"]`
     - `claudeAvailableCount`: slots with Claude & GPT session headroom
     - `geminiAvailableCount`: slots with Gemini session headroom
     - `recommendedNextSlot`: next slot in rotation order with headroom
     - `recommendedNextEmail`: email of recommended slot
-    - `earliestClaudeResetSlot` & `earliestClaudeResetAt`: earliest reset across exhausted accounts
-    - `slots`: array of slot objects with `slot`, `email`, `status`, `isCurrent`, `hasClaudeRoom`, `hasGeminiRoom`, `claudeSessionUsed`, `claudeSessionResetsAt`, `geminiSessionUsed`, `geminiSessionResetsAt`, `claudeWeeklyUsed`, `claudeWeeklyResetsAt`, `geminiWeeklyUsed`, `geminiWeeklyResetsAt`
+    - `rotationAdvice`: human & agent readable guidance string
+    - `earliestClaudeResetSlot`, `earliestClaudeResetAt`, `earliestClaudeResetsInSeconds`: earliest Claude session reset across accounts
+    - `earliestGeminiResetSlot`, `earliestGeminiResetAt`, `earliestGeminiResetsInSeconds`: earliest Gemini session reset across accounts
+    - `slots`: array of slot objects with `slot`, `email`, `status`, `isCurrent`, `hasClaudeRoom`, `hasGeminiRoom`, `claudeSessionRoom`, `geminiSessionRoom`, `claudeSessionUsed`, `claudeSessionResetsAt`, `claudeSessionResetsInSeconds`, `geminiSessionUsed`, `geminiSessionResetsAt`, `geminiSessionResetsInSeconds`, `claudeWeeklyUsed`, `claudeWeeklyResetsAt`, `geminiWeeklyUsed`, `geminiWeeklyResetsAt`
   - Under `tools[antigravity]`:
-    - `accountCount`, `signedInCount`, `currentSlot`, `currentEmail`, `recommendedNextSlot`, `recommendedNextEmail`, `claudeAvailableCount`, `geminiAvailableCount`
-    - `accounts`: full array of accounts with per-window usage fractions and ISO8601 reset timestamps
+    - `accountCount`, `signedInCount`, `currentSlot`, `currentEmail`, `activeSlot`, `activeEmail`, `activeHasClaudeRoom`, `activeHasGeminiRoom`, `recommendedNextSlot`, `recommendedNextEmail`, `claudeAvailableCount`, `geminiAvailableCount`, `earliestClaudeResetSlot`, `earliestClaudeResetAt`, `earliestClaudeResetsInSeconds`
+    - `accounts`: full array of accounts with per-window usage fractions, headroom fractions, and ISO8601 reset timestamps
 - Advisor:
-  - When the current slot exhausts its Claude & GPT session, `Advisor.johnRouting` advises rotating to the next ready slot (e.g. `[agy6]`). If all are exhausted, it advises using Gemini models or ChatGPT and reports the earliest reset time.
+  - When the current slot exhausts its Claude & GPT session, `Advisor.johnRouting` advises rotating to the next ready slot (e.g. `[agy5]`). If all are exhausted, it advises using Gemini models or ChatGPT and reports the earliest reset time.
+  - Proactively advises when the current slot Claude session reaches >= 75% used with the upcoming rotation slot.
 
 ## ChatGPT Four Weekly Resets & ChatGPTHeavyMetrics / Heavy Burn
 
@@ -68,12 +77,15 @@ Antigravity uses slot-isolated HOME directories (`~/.agy-accounts/acctN`) or the
 - `burnedResetsCount: N`
 - `inProgressResetsCount: N`
 - `activeWindowID`: ID of first available weekly reset (e.g. `chatgpt_week_1`)
-- `activeWindowLabel`: label of active reset
+- `activeWindowLabel`: clean label string of active reset (e.g. "Weekly reset 1")
 - `emptyWindowIDs`: list of unspent weekly reset IDs
-- `burnAdvice`: routing guidance (e.g. "Burn weekly reset Weekly reset 1 (empty, priority 1)")
+- `headroomFractions`: array of remaining room per weekly reset
+- `nextResetAt` & `nextResetInSeconds`: earliest reset timestamp and seconds
+- `burnAdvice`: routing guidance (e.g. "Burn Weekly reset 1 (empty, priority 1)")
 - `Advisor.johnRouting` automatically prioritizes burning empty ChatGPT weekly resets before other platforms.
 - Overrides:
   - Environment: `NOTCHMETER_CHATGPT_USAGE="0.0,0.1,0.0,0.0"`
+  - Reset cadence: `NOTCHMETER_CHATGPT_RESET_HOURS="24,48,72,96"`
   - File: `~/Library/Application Support/OpenAI/chatgpt-usage.json`
 
 The `ChatGPTHeavyMetrics` model (`Sources/Notchmeter/ChatGPTMetrics.swift`) tracks multi-window status across the 4-week reset cycle:

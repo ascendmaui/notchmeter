@@ -698,14 +698,22 @@ enum Advisor {
         if let agyReading = context.readings.first(where: { $0.tool == .antigravity }),
            let accounts = agyReading.accounts, !accounts.isEmpty {
             let current = accounts.first(where: \.isCurrent) ?? accounts.first
-            if let cur = current, !cur.hasClaudeSessionRoom {
-                if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, forModelFamily: "claude") {
-                    lines.append(Advice(id: "john/antigravity-rotate", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
-                                        text: "Antigravity [\(cur.slot)] Claude session is exhausted. Rotate to [\(nextSlot.slot)] (\(nextSlot.email))."))
-                } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
-                    let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
-                    lines.append(Advice(id: "john/antigravity-all-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
-                                        text: "All Antigravity Claude sessions exhausted across \(accounts.count) accounts. Earliest \(resetStr) ([\(earliest.slot)]). Use Gemini models or ChatGPT."))
+            if let cur = current {
+                if !cur.hasClaudeSessionRoom {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "claude") {
+                        lines.append(Advice(id: "john/antigravity-rotate", tool: .antigravity, priority: .warn, symbol: "arrow.triangle.2.circlepath",
+                                            text: "Antigravity [\(cur.slot)] Claude session is exhausted. Rotate to [\(nextSlot.slot)] (\(nextSlot.email))."))
+                    } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                        let resetStr = RelativeTime.resets(earliest.resetsAt, hasLimit: true, now: context.now)
+                        lines.append(Advice(id: "john/antigravity-all-exhausted", tool: .antigravity, priority: .warn, symbol: "clock.badge.exclamationmark",
+                                            text: "All Antigravity Claude sessions exhausted across \(accounts.count) accounts. Earliest \(resetStr) ([\(earliest.slot)]). Use Gemini models or ChatGPT."))
+                    }
+                } else if let sessionWin = cur.claudeSessionWindow, let used = sessionWin.usedFraction, used >= 0.75 {
+                    if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: cur.slot, forModelFamily: "claude") {
+                        lines.append(Advice(id: "john/antigravity-session-closing", tool: .antigravity, priority: .info, symbol: "arrow.triangle.2.circlepath",
+                                            text: "Antigravity [\(cur.slot)] Claude session is at \(Int((used * 100).rounded()))%. Next in rotation: [\(nextSlot.slot)] (\(nextSlot.email))."))
+                    }
+                }
                 }
             }
         }

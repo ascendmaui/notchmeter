@@ -1991,17 +1991,32 @@ enum Probe {
                     lines.append("    [\(acct.slot)] \(acct.email)\(current): \(acct.status)")
                 }
             }
-            if let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, forModelFamily: "claude") {
-                lines.append("  rotation: next recommended slot is [\(nextSlot.slot)] (\(nextSlot.email))")
-            } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
-                lines.append("  rotation: all Claude sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+            let current = accounts.first(where: \.isCurrent) ?? accounts.first
+            let nextSlot = AntigravityAccounts.recommendedNextSlot(accounts: accounts, startingAfter: current?.slot, forModelFamily: "claude")
+            if let cur = current, !cur.hasClaudeSessionRoom {
+                if let next = nextSlot {
+                    lines.append("  rotation: [\(cur.slot)] Claude session exhausted; rotate to [\(next.slot)] (\(next.email))")
+                } else if let earliest = AntigravityAccounts.earliestSessionReset(accounts: accounts, forModelFamily: "claude") {
+                    lines.append("  rotation: all Claude sessions exhausted; earliest [\(earliest.slot)] \(RelativeTime.resets(earliest.resetsAt, hasLimit: true))")
+                }
+            } else if let cur = current {
+                let room = Int(((cur.claudeSessionRoomFraction ?? 1.0) * 100).rounded())
+                if let next = nextSlot {
+                    lines.append("  rotation: [\(cur.slot)] active with \(room)% Claude room; next in sequence is [\(next.slot)] (\(next.email))")
+                } else {
+                    lines.append("  rotation: [\(cur.slot)] active with \(room)% Claude room")
+                }
             }
         }
         if reading.tool == .chatgpt {
-            let empty = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) && ($0.usedFraction ?? 1) < 0.15 }.count
-            var cgtLine = "  chatgpt-heavy: \(empty) of \(reading.windows.count) weekly resets available for burn routing (priority 1)"
-            if let active = reading.windows.first(where: { ChatGPTProvider.weeklyWindowIDs.contains($0.id) && ($0.usedFraction ?? 0) < 0.85 }) {
+            let weekly = reading.windows.filter { ChatGPTProvider.weeklyWindowIDs.contains($0.id) }
+            let empty = weekly.filter { ($0.usedFraction ?? 1) < 0.15 }
+            var cgtLine = "  chatgpt-heavy: \(empty.count) of \(weekly.count) weekly resets available for burn routing (priority 1)"
+            if let active = weekly.first(where: { ($0.usedFraction ?? 0) < 0.85 }) ?? weekly.first {
                 cgtLine += " — active: \(active.label)"
+                if let resets = active.resetsAt {
+                    cgtLine += " (\(RelativeTime.resets(resets, hasLimit: true)))"
+                }
             }
             lines.append(cgtLine)
         }

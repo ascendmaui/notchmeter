@@ -140,7 +140,9 @@ enum CommandLineTool {
                         lines.append("    [\(slot)] \(email)\(currentTag): \(acctStatus)")
                     }
                 }
-                if let nextSlot = tool["recommendedNextSlot"] as? String, let nextEmail = tool["recommendedNextEmail"] as? String {
+                if let advice = tool["rotationAdvice"] as? String {
+                    lines.append("  rotation: \(advice)")
+                } else if let nextSlot = tool["recommendedNextSlot"] as? String, let nextEmail = tool["recommendedNextEmail"] as? String {
                     lines.append("  rotation: next recommended slot is [\(nextSlot)] (\(nextEmail))")
                 } else if let resetSlot = tool["earliestClaudeResetSlot"] as? String, let resetAtStr = tool["earliestClaudeResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
                     lines.append("  rotation: all Claude sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
@@ -152,6 +154,9 @@ enum CommandLineTool {
                     cgtLine += " — active: \(activeLabel)"
                 }
                 lines.append(cgtLine)
+                if let burnAdvice = tool["burnAdvice"] as? String {
+                    lines.append("  burn-advice: \(burnAdvice)")
+                }
             }
         }
         if let cost = root["cost"] as? [String: Any], let today = JSON.number(cost["today"]) {

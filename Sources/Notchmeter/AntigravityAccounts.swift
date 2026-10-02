@@ -68,6 +68,22 @@ struct AntigravityAccount: Codable, Equatable, Sendable {
         guard let used = geminiSessionWindow?.usedFraction else { return false }
         return used < 0.95
     }
+
+    var claudeSessionRoomFraction: Double? {
+        claudeSessionWindow?.usedFraction.map { max(0, 1.0 - $0) }
+    }
+
+    var geminiSessionRoomFraction: Double? {
+        geminiSessionWindow?.usedFraction.map { max(0, 1.0 - $0) }
+    }
+
+    var claudeWeeklyRoomFraction: Double? {
+        claudeWeeklyWindow?.usedFraction.map { max(0, 1.0 - $0) }
+    }
+
+    var geminiWeeklyRoomFraction: Double? {
+        geminiWeeklyWindow?.usedFraction.map { max(0, 1.0 - $0) }
+    }
 }
 
 /// Discovers and probes multi-account Antigravity configurations.
@@ -129,10 +145,17 @@ enum AntigravityAccounts {
         return nil
     }
 
-    /// Recommends the next ready slot to rotate to according to rotation order.
-    static func recommendedNextSlot(accounts: [AntigravityAccount], forModelFamily: String = "claude") -> AntigravityAccount? {
+    /// Recommends the next ready slot to rotate to according to rotation order,
+    /// optionally starting after the specified current slot (circular rotation).
+    static func recommendedNextSlot(accounts: [AntigravityAccount], startingAfter: String? = nil, forModelFamily: String = "claude") -> AntigravityAccount? {
         let accountMap = Dictionary(uniqueKeysWithValues: accounts.map { ($0.slot, $0) })
-        for slotName in rotationOrder {
+        let order: [String]
+        if let startingAfter, let idx = rotationOrder.firstIndex(of: startingAfter) {
+            order = (1..<rotationOrder.count).map { rotationOrder[(idx + $0) % rotationOrder.count] }
+        } else {
+            order = rotationOrder
+        }
+        for slotName in order {
             guard let account = accountMap[slotName], account.status == "ready" else { continue }
             if forModelFamily == "gemini" {
                 if account.hasGeminiSessionRoom { return account }
@@ -296,8 +319,13 @@ enum AntigravityAccounts {
                                       lastActive: lastActive)
         }
 
-        // Try reading quota summary from cloudcode-pa
-        for host in [CodeAssistProvider.productionHost, CodeAssistProvider.dailyHost] {
+        // Determine hosts to try: prefer the host logged in the slot's cli.log, falling back to standard order
+        let cliLog = slot.homeURL.appendingPathComponent(".gemini/antigravity-cli/cli.log")
+        let preferredHost = CodeAssistProvider.loggedHost(in: cliLog)
+        let hosts = preferredHost.map { pref in [pref] + CodeAssistProvider.hostsToTry.filter { $0 != pref } } ?? CodeAssistProvider.hostsToTry
+
+        var fallbackReading: UsageReading?
+        for host in hosts {
             var request = URLRequest(url: CodeAssistProvider.url(host: host, method: "retrieveUserQuotaSummary"))
             request.httpMethod = "POST"
             request.timeoutInterval = timeout
@@ -313,16 +341,19 @@ enum AntigravityAccounts {
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if statusCode == 200,
                    let reading = try? CodeAssistProvider.parseQuotaSummary(data, plan: "Pro", tool: .antigravity, now: now) {
-                    return AntigravityAccount(slot: slot.slot,
-                                              index: slot.index,
-                                              email: slot.email,
-                                              homeDirectory: slot.homeURL.path,
-                                              isCurrent: slot.isCurrent,
-                                              status: "ready",
-                                              problem: nil,
-                                              plan: "Pro",
-                                              windows: reading.windows,
-                                              lastActive: lastActive)
+                    if CodeAssistProvider.looksMetered(reading, now: now) {
+                        return AntigravityAccount(slot: slot.slot,
+                                                  index: slot.index,
+                                                  email: slot.email,
+                                                  homeDirectory: slot.homeURL.path,
+                                                  isCurrent: slot.isCurrent,
+                                                  status: "ready",
+                                                  problem: nil,
+                                                  plan: "Pro",
+                                                  windows: reading.windows,
+                                                  lastActive: lastActive)
+                    }
+                    if fallbackReading == nil { fallbackReading = reading }
                 } else if statusCode == 401 {
                     return AntigravityAccount(slot: slot.slot,
                                               index: slot.index,
@@ -350,6 +381,19 @@ enum AntigravityAccounts {
                 // Try next host
                 continue
             }
+        }
+
+        if let reading = fallbackReading {
+            return AntigravityAccount(slot: slot.slot,
+                                      index: slot.index,
+                                      email: slot.email,
+                                      homeDirectory: slot.homeURL.path,
+                                      isCurrent: slot.isCurrent,
+                                      status: "ready",
+                                      problem: nil,
+                                      plan: "Pro",
+                                      windows: reading.windows,
+                                      lastActive: lastActive)
         }
 
         return AntigravityAccount(slot: slot.slot,
