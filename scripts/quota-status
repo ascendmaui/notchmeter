@@ -1,0 +1,3 @@
+#!/bin/sh
+# Writes ~/.notchmeter/quota.json. See docs/quota-status.md.
+exec python3 "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/quota_status.py" "$@"
