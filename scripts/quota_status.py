@@ -8,8 +8,13 @@ only with a timestamp that response carried. Anything else is ``unknown`` with
 both fields null.
 
 This command reads OAuth tokens a provider's own client already stored. It
-never asks for a password, never writes a token, and never refreshes one.
-It does not choose which account should run a job.
+never asks for a password and never embeds an OAuth client secret. When a
+stored access token is expired and a refresh token is already on disk, it
+refreshes that token and then probes. Antigravity's Google client is read
+from the local ``agy`` binary at runtime. SuperGrok's client id is read from
+``~/.grok/auth.json``. Codex uses its public client id. A refreshed SuperGrok
+token is written back to that auth file. Google and Codex refreshes stay in
+memory. It does not choose which account should run a job.
 """
 
 from __future__ import annotations
@@ -19,11 +24,13 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
@@ -59,6 +66,18 @@ EXPIRY_SKEW = timedelta(seconds=30)
 PLACEHOLDER_RESET = timedelta(hours=5)
 PLACEHOLDER_TOLERANCE = timedelta(seconds=120)
 
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token"
+# Public client id shipped by the Codex CLI. It is not a client secret.
+OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+# Public prefix of the Antigravity CLI's Google client id. The secret is
+# paired with it from `agy` at runtime and is never stored in this repository.
+AGY_CLIENT_PREFIX = "1071006060591-"
+_GOOGLE_SECRET_PREFIX = "GOC" + "SPX-"
+GOOGLE_CLIENT_RE = re.compile(r"\d{10,}-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com")
+GOOGLE_SECRET_RE = re.compile(re.escape(_GOOGLE_SECRET_PREFIX) + r"[A-Za-z0-9_-]+")
+
 PATH_CHATGPT = "scripts/quota_status.py:probe_chatgpt"
 PATH_SUPERGROK = "scripts/quota_status.py:probe_supergrok"
 PATH_ANTIGRAVITY = "scripts/quota_status.py:probe_antigravity"
@@ -74,6 +93,11 @@ class Credential:
     source: str
     account_id: str | None = None
     logged_host: str | None = None
+    refresh_token: str | None = None
+    oauth_kind: str | None = None
+    store_path: str | None = None
+    store_key: str | None = None
+    grok_client_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -261,37 +285,63 @@ def _antigravity_roots(home: Path, env: Mapping[str, str]) -> list[Path]:
     return found
 
 
-def _google_bearer(payload: dict) -> str | None:
-    """Antigravity's CLI stores the bearer as ``token``. Gemini CLI uses ``access_token``."""
-    for key in ("access_token", "token"):
-        value = payload.get(key)
+def _first_text(*values: object) -> str | None:
+    for value in values:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
 
 
-def _google_expiry(payload: dict, bearer: str, id_token: str | None) -> datetime | None:
-    for key in ("expiry_date", "expires_at"):
-        parsed = parse_time(payload.get(key))
-        if parsed is not None:
-            return parsed
-    for raw in (bearer, id_token):
-        if not isinstance(raw, str):
-            continue
-        claims = jwt_payload(raw)
-        if not claims:
-            continue
-        parsed = parse_time(claims.get("exp"))
-        if parsed is not None:
-            return parsed
+def _first_present(payload: dict, keys: tuple[str, ...]) -> object:
+    for key in keys:
+        if key in payload and payload[key] not in (None, ""):
+            return payload[key]
     return None
+
+
+def _google_material(payload: dict) -> tuple[str | None, str | None, object]:
+    """Return access token, refresh token, and the expiry field that belongs to the access token.
+
+    Antigravity's CLI nests those three under ``token``. A string ``token`` or a
+    top-level ``access_token`` is the older shape. Identity-token expiry is ignored.
+    """
+    nested = payload.get("token")
+    if isinstance(nested, dict):
+        access = _first_text(nested.get("access_token"))
+        if access is not None:
+            refresh = _first_text(nested.get("refresh_token"), payload.get("refresh_token"))
+            expiry = _first_present(nested, ("expiry", "expiry_date", "expires_at"))
+            if expiry is None:
+                expiry = _first_present(payload, ("expiry", "expiry_date", "expires_at"))
+            return access, refresh, expiry
+    string_token = payload.get("token") if isinstance(payload.get("token"), str) else None
+    access = _first_text(payload.get("access_token"), string_token)
+    if access is None:
+        return None, None, None
+    return access, _first_text(payload.get("refresh_token")), _first_present(payload, ("expiry", "expiry_date", "expires_at"))
+
+
+def _google_expiry(expiry_field: object, bearer: str) -> datetime | None:
+    parsed = parse_time(expiry_field)
+    if parsed is not None:
+        return parsed
+    claims = jwt_payload(bearer)
+    if not claims:
+        return None
+    return parse_time(claims.get("exp"))
+
+
+def _google_kind(token_path: Path) -> str:
+    if token_path.name == "oauth_creds.json" and ".agy-accounts" not in token_path.as_posix():
+        return "gemini"
+    return "antigravity"
 
 
 def _google_credential(token_path: Path, root: Path, home: Path) -> tuple[Credential | None, bool]:
     payload = read_json(token_path)
     if payload is None:
         return None, False
-    token = _google_bearer(payload)
+    token, refresh, expiry_field = _google_material(payload)
     if token is None:
         return None, False
     email = None
@@ -315,9 +365,11 @@ def _google_credential(token_path: Path, root: Path, home: Path) -> tuple[Creden
     return Credential(
         email=email,
         access_token=token,
-        expires_at=_google_expiry(payload, token, id_token if isinstance(id_token, str) else None),
+        expires_at=_google_expiry(expiry_field, token),
         source=display_path(token_path, home),
         logged_host=logged_code_assist_host(log_path),
+        refresh_token=refresh,
+        oauth_kind=_google_kind(token_path),
     ), named
 
 
@@ -353,12 +405,15 @@ def discover_supergrok(home: Path, env: Mapping[str, str], now: datetime) -> tup
         if payload is None:
             nameless += 1
             continue
-        entries = payload.values() if _is_entry_map(payload) else [payload]
+        if _is_entry_map(payload):
+            pairs = [(key, value) for key, value in payload.items() if isinstance(value, dict)]
+        else:
+            pairs = [(None, payload)]
         found_here = False
-        for entry in entries:
+        for store_key, entry in pairs:
             if not isinstance(entry, dict):
                 continue
-            cred = _supergrok_entry(entry, path, home)
+            cred = _supergrok_entry(entry, path, home, store_key if isinstance(store_key, str) else None)
             if cred is None:
                 continue
             found_here = True
@@ -375,18 +430,25 @@ def _is_entry_map(payload: dict) -> bool:
     return any(isinstance(value, dict) and ("key" in value or "email" in value) for value in payload.values())
 
 
-def _supergrok_entry(entry: dict, path: Path, home: Path) -> Credential | None:
+def _supergrok_entry(entry: dict, path: Path, home: Path, store_key: str | None) -> Credential | None:
     email = entry.get("email")
     token = entry.get("key")
     if not isinstance(email, str) or "@" not in email:
         return None
     if not isinstance(token, str) or not token.strip():
         return None
+    refresh = entry.get("refresh_token")
+    client_id = entry.get("oidc_client_id")
     return Credential(
         email=email.strip().lower(),
         access_token=token.strip(),
         expires_at=parse_time(entry.get("expires_at")),
         source=display_path(path, home),
+        refresh_token=refresh.strip() if isinstance(refresh, str) and refresh.strip() else None,
+        oauth_kind="supergrok",
+        store_path=str(path),
+        store_key=store_key,
+        grok_client_id=client_id.strip() if isinstance(client_id, str) and client_id.strip() else None,
     )
 
 
@@ -424,27 +486,36 @@ def _codex_credential(path: Path, home: Path) -> Credential | None:
     token = tokens.get("access_token")
     if not isinstance(token, str) or not token.strip():
         return None
-    claims = jwt_payload(token) or {}
+    access_claims = jwt_payload(token) or {}
     id_token = tokens.get("id_token")
-    if isinstance(id_token, str):
-        claims = {**claims, **(jwt_payload(id_token) or {})}
-    email = email_from_claims(claims)
+    id_claims = jwt_payload(id_token) if isinstance(id_token, str) else None
+    id_claims = id_claims or {}
+    email = email_from_claims(id_claims) or email_from_claims(access_claims)
     if email is None:
         return None
     account_id = tokens.get("account_id")
     if not isinstance(account_id, str) or not account_id:
-        auth = claims.get("https://api.openai.com/auth")
-        if isinstance(auth, dict) and isinstance(auth.get("chatgpt_account_id"), str):
-            account_id = auth["chatgpt_account_id"]
-        else:
-            account_id = None
+        account_id = _chatgpt_account_id(access_claims) or _chatgpt_account_id(id_claims)
+    refresh = tokens.get("refresh_token")
     return Credential(
         email=email,
         access_token=token.strip(),
-        expires_at=parse_time(claims.get("exp")),
+        expires_at=parse_time(access_claims.get("exp")),
         source=display_path(path, home),
         account_id=account_id,
+        refresh_token=refresh.strip() if isinstance(refresh, str) and refresh.strip() else None,
+        oauth_kind="codex",
     )
+
+
+def _chatgpt_account_id(claims: dict) -> str | None:
+    auth = claims.get("https://api.openai.com/auth")
+    if not isinstance(auth, dict):
+        return None
+    value = auth.get("chatgpt_account_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _remaining_number(document: dict) -> int | float | None:
@@ -616,6 +687,20 @@ def exhaustion_message(body: bytes) -> str | None:
     return compact[:240]
 
 
+def access_denied(body: bytes) -> bool:
+    text = body.decode("utf-8", errors="ignore").lower()
+    if len(text) > 4000:
+        text = text[:4000]
+    phrases = (
+        "permission_denied",
+        "permission denied",
+        "do not have a valid license",
+        "not licensed",
+        "unlicensed",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
 def _allowed(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
@@ -626,6 +711,12 @@ def _allowed(url: str) -> bool:
     if host == "cli-chat-proxy.grok.com" and parsed.path == "/v1/billing":
         return True
     if host in CODE_ASSIST_HOSTS and parsed.path == "/v1internal:retrieveUserQuotaSummary":
+        return True
+    if host == "oauth2.googleapis.com" and parsed.path == "/token":
+        return True
+    if host == "auth.openai.com" and parsed.path == "/oauth/token":
+        return True
+    if host == "auth.x.ai" and parsed.path == "/oauth2/token":
         return True
     return False
 
@@ -648,7 +739,285 @@ def _json_body(payload: bytes) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def probe_chatgpt(email: str, creds: list[Credential], expired: list[Credential], nameless: int, transport: Transport) -> tuple[dict, Note]:
+def oauth_client_from_text(text: str, prefer_prefix: str | None = None) -> tuple[str, str] | None:
+    """Pair a Google client id with the nearest client secret in ``text``.
+
+    When ``prefer_prefix`` is set, only a client id with that prefix is returned.
+    """
+    ids = list(GOOGLE_CLIENT_RE.finditer(text))
+    secrets = list(GOOGLE_SECRET_RE.finditer(text))
+    if not ids or not secrets:
+        return None
+    chosen = None
+    if prefer_prefix:
+        for match in ids:
+            if match.group(0).startswith(prefer_prefix):
+                chosen = match
+                break
+        if chosen is None:
+            return None
+    else:
+        chosen = ids[0]
+
+    def gap(secret: re.Match[str]) -> tuple[int, int]:
+        if secret.end() <= chosen.start():
+            return chosen.start() - secret.end(), 1
+        if chosen.end() <= secret.start():
+            return secret.start() - chosen.end(), 0
+        return 0, 0
+
+    secret = min(secrets, key=gap)
+    return chosen.group(0), secret.group(0)
+
+
+def discover_agy_oauth_client(env: Mapping[str, str]) -> tuple[str, str] | None:
+    """Read Antigravity's Google client from the environment or from ``agy``."""
+    client_id = env.get("NOTCHMETER_AGY_OAUTH_CLIENT_ID", "").strip()
+    client_secret = env.get("NOTCHMETER_AGY_OAUTH_CLIENT_SECRET", "").strip()
+    if client_id and client_secret:
+        return client_id, client_secret
+    binary = shutil.which("agy")
+    if not binary:
+        return None
+    text = _binary_text(binary)
+    if not text:
+        return None
+    return oauth_client_from_text(text, AGY_CLIENT_PREFIX)
+
+
+def _binary_text(path: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["strings", path],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        completed = None
+    if completed is not None and completed.returncode == 0 and completed.stdout:
+        return completed.stdout.decode("utf-8", errors="ignore")
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ""
+    return _ascii_runs(data)
+
+
+def _ascii_runs(data: bytes, minimum: int = 12) -> str:
+    parts: list[str] = []
+    current = bytearray()
+    for byte in data:
+        if 32 <= byte < 127:
+            current.append(byte)
+            continue
+        if len(current) >= minimum:
+            parts.append(current.decode("ascii"))
+        current.clear()
+    if len(current) >= minimum:
+        parts.append(current.decode("ascii"))
+    return "\n".join(parts)
+
+
+def _oauth_clients(
+    env: Mapping[str, str],
+    provided: Mapping[str, tuple[str, str]] | None,
+) -> Mapping[str, tuple[str, str]]:
+    if provided is not None:
+        return provided
+    found = discover_agy_oauth_client(env)
+    if found is None:
+        return {}
+    return {"antigravity": found}
+
+
+def _issued(document: dict, now: datetime) -> tuple[str, str | None, datetime | None] | None:
+    access = document.get("access_token")
+    if not isinstance(access, str) or not access.strip():
+        return None
+    refresh = document.get("refresh_token")
+    refresh_token = refresh.strip() if isinstance(refresh, str) and refresh.strip() else None
+    expires = parse_time(document.get("expires_at"))
+    if expires is None:
+        expires = parse_time(document.get("expiry"))
+    if expires is None:
+        seconds = number(document.get("expires_in"))
+        if seconds is not None and seconds > 0:
+            expires = now + timedelta(seconds=float(seconds))
+    if expires is None:
+        claims = jwt_payload(access.strip())
+        if claims:
+            expires = parse_time(claims.get("exp"))
+    return access.strip(), refresh_token, expires
+
+
+def _refresh_form(transport: Transport, url: str, fields: dict[str, str]) -> dict | None:
+    body = urllib.parse.urlencode(fields).encode("utf-8")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    response = _request(transport, "POST", url, headers, body)
+    if response is None or response[0] != 200:
+        return None
+    return _json_body(response[1])
+
+
+def _refresh_google(
+    cred: Credential,
+    transport: Transport,
+    client: tuple[str, str],
+    now: datetime,
+) -> Credential | None:
+    client_id, client_secret = client
+    if not cred.refresh_token or not client_id or not client_secret:
+        return None
+    document = _refresh_form(transport, GOOGLE_TOKEN_URL, {
+        "grant_type": "refresh_token",
+        "refresh_token": cred.refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    })
+    if document is None:
+        return None
+    issued = _issued(document, now)
+    if issued is None:
+        return None
+    access, refresh, expires = issued
+    return replace(
+        cred,
+        access_token=access,
+        expires_at=expires,
+        refresh_token=refresh or cred.refresh_token,
+    )
+
+
+def _refresh_openai(cred: Credential, transport: Transport, now: datetime) -> Credential | None:
+    if not cred.refresh_token:
+        return None
+    body = json.dumps({
+        "client_id": OPENAI_CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": cred.refresh_token,
+    }).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    response = _request(transport, "POST", OPENAI_TOKEN_URL, headers, body)
+    if response is None or response[0] != 200:
+        return None
+    document = _json_body(response[1])
+    if document is None:
+        return None
+    issued = _issued(document, now)
+    if issued is None:
+        return None
+    access, refresh, expires = issued
+    return replace(
+        cred,
+        access_token=access,
+        expires_at=expires,
+        refresh_token=refresh or cred.refresh_token,
+    )
+
+
+def _persist_grok(cred: Credential, access_token: str, refresh_token: str | None, expires_at: datetime | None) -> None:
+    if not cred.store_path:
+        return
+    path = Path(cred.store_path)
+    payload = read_json(path)
+    if payload is None:
+        return
+    if cred.store_key is None:
+        entry = payload
+    else:
+        entry = payload.get(cred.store_key)
+    if not isinstance(entry, dict):
+        return
+    entry["key"] = access_token
+    if refresh_token:
+        entry["refresh_token"] = refresh_token
+    if expires_at is not None:
+        entry["expires_at"] = iso_z(expires_at)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+        os.chmod(path, 0o600)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            return
+
+
+def _refresh_supergrok(cred: Credential, transport: Transport, now: datetime) -> Credential | None:
+    if not cred.refresh_token or not cred.grok_client_id:
+        return None
+    document = _refresh_form(transport, XAI_TOKEN_URL, {
+        "grant_type": "refresh_token",
+        "refresh_token": cred.refresh_token,
+        "client_id": cred.grok_client_id,
+    })
+    if document is None:
+        return None
+    issued = _issued(document, now)
+    if issued is None:
+        return None
+    access, refresh, expires = issued
+    kept_refresh = refresh or cred.refresh_token
+    _persist_grok(cred, access, kept_refresh, expires)
+    return replace(cred, access_token=access, expires_at=expires, refresh_token=kept_refresh)
+
+
+def _refresh_ready(cred: Credential, clients: Mapping[str, tuple[str, str]]) -> bool:
+    if not cred.refresh_token:
+        return False
+    if cred.oauth_kind == "supergrok":
+        return bool(cred.grok_client_id)
+    if cred.oauth_kind == "codex":
+        return True
+    if cred.oauth_kind == "antigravity":
+        client = clients.get("antigravity")
+        return client is not None and bool(client[0]) and bool(client[1])
+    if cred.oauth_kind == "gemini":
+        return False
+    return False
+
+
+def _silent_refresh(
+    cred: Credential,
+    transport: Transport,
+    clients: Mapping[str, tuple[str, str]],
+    now: datetime,
+) -> Credential | None:
+    if cred.oauth_kind == "supergrok":
+        return _refresh_supergrok(cred, transport, now)
+    if cred.oauth_kind == "codex":
+        return _refresh_openai(cred, transport, now)
+    if cred.oauth_kind == "antigravity":
+        client = clients.get("antigravity")
+        if client is None:
+            return None
+        return _refresh_google(cred, transport, client, now)
+    if cred.oauth_kind == "gemini":
+        return None
+    return None
+
+
+def probe_chatgpt(
+    email: str,
+    creds: list[Credential],
+    expired: list[Credential],
+    nameless: int,
+    transport: Transport,
+    clients: Mapping[str, tuple[str, str]],
+    now: datetime,
+) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
         return _call_chatgpt(cred, transport)
 
@@ -661,10 +1030,21 @@ def probe_chatgpt(email: str, creds: list[Credential], expired: list[Credential]
         PATH_CHATGPT,
         "Codex auth.json",
         call,
+        transport,
+        clients,
+        now,
     )
 
 
-def probe_supergrok(email: str, creds: list[Credential], expired: list[Credential], nameless: int, transport: Transport) -> tuple[dict, Note]:
+def probe_supergrok(
+    email: str,
+    creds: list[Credential],
+    expired: list[Credential],
+    nameless: int,
+    transport: Transport,
+    clients: Mapping[str, tuple[str, str]],
+    now: datetime,
+) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
         return _call_supergrok(cred, transport)
 
@@ -677,10 +1057,21 @@ def probe_supergrok(email: str, creds: list[Credential], expired: list[Credentia
         PATH_SUPERGROK,
         "~/.grok/auth.json",
         call,
+        transport,
+        clients,
+        now,
     )
 
 
-def probe_antigravity(email: str, creds: list[Credential], expired: list[Credential], nameless: int, transport: Transport, now: datetime) -> tuple[dict, Note]:
+def probe_antigravity(
+    email: str,
+    creds: list[Credential],
+    expired: list[Credential],
+    nameless: int,
+    transport: Transport,
+    clients: Mapping[str, tuple[str, str]],
+    now: datetime,
+) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
         return _call_antigravity(cred, transport, now)
 
@@ -693,10 +1084,13 @@ def probe_antigravity(email: str, creds: list[Credential], expired: list[Credent
         PATH_ANTIGRAVITY,
         "antigravity-oauth-token or oauth_creds.json",
         call,
+        transport,
+        clients,
+        now,
     )
 
 
-def _probe_matching(email, provider, creds, expired, nameless, code_path, label, call) -> tuple[dict, Note]:
+def _probe_matching(email, provider, creds, expired, nameless, code_path, label, call, transport, clients, now) -> tuple[dict, Note]:
     matched = [cred for cred in creds if cred.email == email]
     expired_matched = [cred for cred in expired if cred.email == email]
     if not matched and not expired_matched:
@@ -704,16 +1098,26 @@ def _probe_matching(email, provider, creds, expired, nameless, code_path, label,
         if nameless:
             detail += f"; {nameless} credential file(s) had no email and were not queried"
         return unknown_row(email, provider), Note(email, provider, "unknown", detail, code_path)
-    if not matched and expired_matched:
+    usable = list(matched)
+    attempted = False
+    if not usable:
+        for cred in expired_matched:
+            if _refresh_ready(cred, clients):
+                attempted = True
+            fresh = _silent_refresh(cred, transport, clients, now)
+            if fresh is not None and not _expired(fresh.expires_at, now):
+                usable.append(fresh)
+    if not usable and expired_matched:
+        reason = "silent refresh failed" if attempted else "silent refresh unavailable"
         return unknown_row(email, provider), Note(
             email,
             provider,
             "unknown",
-            f"stored access token in {expired_matched[0].source} is expired; this command does not refresh or store credentials",
+            f"stored access token in {expired_matched[0].source} is expired; {reason}",
             code_path,
         )
     readings = []
-    for cred in matched:
+    for cred in usable:
         reading = call(cred)
         if reading is not None:
             readings.append((cred, reading))
@@ -722,7 +1126,7 @@ def _probe_matching(email, provider, creds, expired, nameless, code_path, label,
             email,
             provider,
             "unknown",
-            f"credential in {matched[0].source} did not return a quota document",
+            f"credential in {usable[0].source} did not return a quota document",
             code_path,
         )
     unique = {(state, remaining, resets_at) for _, (state, remaining, resets_at) in readings}
@@ -807,6 +1211,8 @@ def _call_antigravity(cred: Credential, transport: Transport, now: datetime) -> 
             continue
         status, payload = response
         if status in (401, 403):
+            if access_denied(payload):
+                return None
             if status == 403 and exhaustion_message(payload):
                 return "exhausted", None, None
             return None
@@ -838,10 +1244,12 @@ def build_report(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     transport: Transport | None = None,
+    oauth_clients: Mapping[str, tuple[str, str]] | None = None,
 ) -> tuple[dict, list[Note]]:
     environment = env if env is not None else os.environ
     moment = now if now is not None else datetime.now(timezone.utc)
     client = transport if transport is not None else urllib_transport
+    clients = _oauth_clients(environment, oauth_clients)
     agy_ok, agy_expired, agy_nameless = discover_antigravity(home, environment, moment)
     codex_ok, codex_expired, codex_nameless = discover_codex(home, environment, moment)
     grok_ok, grok_expired, grok_nameless = discover_supergrok(home, environment, moment)
@@ -849,11 +1257,11 @@ def build_report(
     notes: list[Note] = []
     for email, provider in ROSTER:
         if provider == "chatgpt":
-            built, note = probe_chatgpt(email, codex_ok, codex_expired, codex_nameless, client)
+            built, note = probe_chatgpt(email, codex_ok, codex_expired, codex_nameless, client, clients, moment)
         elif provider == "supergrok":
-            built, note = probe_supergrok(email, grok_ok, grok_expired, grok_nameless, client)
+            built, note = probe_supergrok(email, grok_ok, grok_expired, grok_nameless, client, clients, moment)
         elif provider == "antigravity":
-            built, note = probe_antigravity(email, agy_ok, agy_expired, agy_nameless, client, moment)
+            built, note = probe_antigravity(email, agy_ok, agy_expired, agy_nameless, client, clients, moment)
         else:
             raise AssertionError(provider)
         accounts.append(built)
