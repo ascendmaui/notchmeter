@@ -604,7 +604,14 @@ class ProbeTests(unittest.TestCase):
                 transport=RecordingTransport(handler),
                 oauth_clients={"antigravity": (client_id, client_secret)},
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotEqual(path.read_text(encoding="utf-8"), original)
+        self.assertEqual(saved["token"]["access_token"], "ya29.fresh")
+        self.assertEqual(saved["token"]["refresh_token"], "nested-refresh")
+        self.assertEqual(saved["token"]["expiry"], "2026-10-04T16:00:00Z")
+        self.assertEqual(saved["auth_method"], "google")
+        self.assertIn("id_token", saved)
+        self.assertNotIn(client_secret, json.dumps(saved))
         row = next(item for item in report["accounts"] if item["email"] == "503meds@gmail.com")
         self.assertEqual(row["state"], "open")
         self.assertEqual(row["remaining"], 0.2)
@@ -621,7 +628,8 @@ class ProbeTests(unittest.TestCase):
             token_dir = slot / ".gemini" / "antigravity-cli"
             token_dir.mkdir(parents=True)
             (slot / "ACCOUNT_EMAIL").write_text("ascendmaui@gmail.com\n", encoding="utf-8")
-            (token_dir / "antigravity-oauth-token").write_text(json.dumps({
+            path = token_dir / "antigravity-oauth-token"
+            path.write_text(json.dumps({
                 "token": {
                     "access_token": "ya29.expired",
                     "refresh_token": "nested-refresh",
@@ -630,6 +638,7 @@ class ProbeTests(unittest.TestCase):
                 "auth_method": "google",
                 "id_token": jwt({"email": "ascendmaui@gmail.com"}),
             }), encoding="utf-8")
+            original = path.read_text(encoding="utf-8")
 
             def handler(method, url, headers, body):
                 self.assertEqual(url, quota.GOOGLE_TOKEN_URL)
@@ -644,6 +653,7 @@ class ProbeTests(unittest.TestCase):
                 transport=transport,
                 oauth_clients={"antigravity": ("1071006060591-runtime.apps.googleusercontent.com", "runtime-secret")},
             )
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
         self.assertEqual([url for _method, url, _headers, _body, _timeout in transport.calls], [quota.GOOGLE_TOKEN_URL])
         row = next(item for item in report["accounts"] if item["email"] == "ascendmaui@gmail.com" and item["provider"] == "antigravity")
         self.assertEqual(row["state"], "unknown")
@@ -764,6 +774,7 @@ class ProbeTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             mode = path.stat().st_mode & 0o777
         self.assertEqual(saved["john"]["key"], "new-access")
+        self.assertEqual(saved["john"]["access_token"], "new-access")
         self.assertEqual(saved["john"]["refresh_token"], "new-refresh")
         self.assertEqual(saved["john"]["expires_at"], "2026-10-04T16:00:00Z")
         self.assertEqual(saved["john"]["email"], "johnmatveyev@gmail.com")
@@ -781,6 +792,87 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("new-access", encoded)
         self.assertNotIn("new-refresh", encoded)
         self.assertEqual(mode, 0o600)
+
+    def test_supergrok_access_token_field_refreshes_when_key_is_absent(self):
+        client_id = "b1a00492-073a-47ea-816f-4c329264a828"
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            grok = home / ".grok"
+            grok.mkdir()
+            path = grok / "auth.json"
+            path.write_text(json.dumps({
+                "john": {
+                    "access_token": "old-access",
+                    "refresh_token": "old-refresh",
+                    "expires_at": "2020-01-01T00:00:00Z",
+                    "email": "johnmatveyev@gmail.com",
+                    "oidc_client_id": client_id,
+                },
+            }), encoding="utf-8")
+
+            def handler(method, url, headers, body):
+                if url == quota.XAI_TOKEN_URL:
+                    return 200, {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}
+                self.assertEqual(headers["Authorization"], "Bearer new-access")
+                return 200, {"config": {"creditUsagePercent": 37, "currentPeriod": {"end": "2026-10-11T06:00:00Z"}}}
+
+            report, _notes = quota.build_report(home, env={}, now=NOW, transport=RecordingTransport(handler), oauth_clients={})
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["john"]["key"], "new-access")
+        self.assertEqual(saved["john"]["access_token"], "new-access")
+        self.assertEqual(saved["john"]["refresh_token"], "new-refresh")
+        self.assertEqual(saved["john"]["expires_at"], "2026-10-04T16:00:00Z")
+        row = next(item for item in report["accounts"] if item["email"] == "johnmatveyev@gmail.com" and item["provider"] == "supergrok")
+        self.assertEqual(row["state"], "open")
+        self.assertIsNone(row["remaining"])
+        self.assertEqual(row["resets_at"], "2026-10-11T06:00:00Z")
+
+    def test_antigravity_refresh_leaves_a_replaced_token_file_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            slot = home / ".agy-accounts" / "acct2"
+            token_dir = slot / ".gemini" / "antigravity-cli"
+            token_dir.mkdir(parents=True)
+            (slot / "ACCOUNT_EMAIL").write_text("ascendmaui@gmail.com\n", encoding="utf-8")
+            path = token_dir / "antigravity-oauth-token"
+            path.write_text(json.dumps({
+                "token": {
+                    "access_token": "ya29.expired",
+                    "refresh_token": "nested-refresh",
+                    "expiry": "2020-01-01T00:00:00Z",
+                },
+                "auth_method": "google",
+                "id_token": jwt({"email": "ascendmaui@gmail.com"}),
+            }), encoding="utf-8")
+
+            def handler(method, url, headers, body):
+                if url == quota.GOOGLE_TOKEN_URL:
+                    path.write_text(json.dumps({
+                        "token": {
+                            "access_token": "ya29.someone-else",
+                            "refresh_token": "other-refresh",
+                            "expiry": "2020-01-01T00:00:00Z",
+                        },
+                        "auth_method": "google",
+                        "id_token": jwt({"email": "ascendmaui@gmail.com"}),
+                    }), encoding="utf-8")
+                    return 200, {"access_token": "ya29.fresh", "expires_in": 3600, "refresh_token": "rotated-refresh"}
+                self.assertEqual(headers["Authorization"], "Bearer ya29.fresh")
+                return 200, {"groups": [{"displayName": "Gemini models", "buckets": [
+                    {"window": "weekly", "remainingFraction": 0.5, "resetTime": "2026-12-02T00:00:00Z"},
+                ]}]}
+
+            quota.build_report(
+                home,
+                env={},
+                now=NOW,
+                transport=RecordingTransport(handler),
+                oauth_clients={"antigravity": ("1071006060591-runtime.apps.googleusercontent.com", "runtime-secret")},
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["token"]["access_token"], "ya29.someone-else")
+        self.assertEqual(saved["token"]["refresh_token"], "other-refresh")
+        self.assertNotIn("rotated-refresh", json.dumps(saved))
 
     def test_permission_denied_is_not_exhaustion(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,8 +13,10 @@ stored access token is expired and a refresh token is already on disk, it
 refreshes that token and then probes. Antigravity's Google client is read
 from the local ``agy`` binary at runtime. SuperGrok's client id is read from
 ``~/.grok/auth.json``. Codex uses its public client id. A refreshed SuperGrok
-token is written back to that auth file. Google and Codex refreshes stay in
-memory. It does not choose which account should run a job.
+token is written back onto that entry's ``key``, ``access_token``,
+``refresh_token``, and ``expires_at``. A refreshed Antigravity token is written
+back only when the file still holds the refresh token that was used. Codex
+refreshes stay in memory. It does not choose which account should run a job.
 """
 
 from __future__ import annotations
@@ -370,6 +372,7 @@ def _google_credential(token_path: Path, root: Path, home: Path) -> tuple[Creden
         logged_host=logged_code_assist_host(log_path),
         refresh_token=refresh,
         oauth_kind=_google_kind(token_path),
+        store_path=str(token_path),
     ), named
 
 
@@ -427,15 +430,18 @@ def discover_supergrok(home: Path, env: Mapping[str, str], now: datetime) -> tup
 
 
 def _is_entry_map(payload: dict) -> bool:
-    return any(isinstance(value, dict) and ("key" in value or "email" in value) for value in payload.values())
+    return any(
+        isinstance(value, dict) and ("key" in value or "access_token" in value or "email" in value)
+        for value in payload.values()
+    )
 
 
 def _supergrok_entry(entry: dict, path: Path, home: Path, store_key: str | None) -> Credential | None:
     email = entry.get("email")
-    token = entry.get("key")
+    token = _first_text(entry.get("key"), entry.get("access_token"))
     if not isinstance(email, str) or "@" not in email:
         return None
-    if not isinstance(token, str) or not token.strip():
+    if token is None:
         return None
     refresh = entry.get("refresh_token")
     client_id = entry.get("oidc_client_id")
@@ -885,11 +891,13 @@ def _refresh_google(
     if issued is None:
         return None
     access, refresh, expires = issued
+    kept_refresh = refresh or cred.refresh_token
+    _persist_google(cred, access, kept_refresh, expires)
     return replace(
         cred,
         access_token=access,
         expires_at=expires,
-        refresh_token=refresh or cred.refresh_token,
+        refresh_token=kept_refresh,
     )
 
 
@@ -924,6 +932,77 @@ def _refresh_openai(cred: Credential, transport: Transport, now: datetime) -> Cr
     )
 
 
+def _atomic_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+        os.chmod(path, 0o600)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            return
+
+
+def _expiry_replacement(previous: object, expires_at: datetime | None) -> object:
+    if expires_at is None:
+        return previous
+    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
+        seconds = expires_at.timestamp()
+        if previous > 10_000_000_000:
+            return int(seconds * 1000)
+        return int(seconds)
+    return iso_z(expires_at)
+
+
+def _assign_expiry(container: dict, expires_at: datetime | None) -> None:
+    if expires_at is None:
+        return
+    for key in ("expiry", "expiry_date", "expires_at"):
+        if key in container:
+            container[key] = _expiry_replacement(container.get(key), expires_at)
+            return
+    container["expiry"] = iso_z(expires_at)
+
+
+def _persist_google(cred: Credential, access_token: str, refresh_token: str | None, expires_at: datetime | None) -> None:
+    """Write a refreshed Antigravity token back when the file still matches.
+
+    A file that no longer holds this refresh token is left alone. The client
+    secret is never written.
+    """
+    if cred.oauth_kind != "antigravity" or not cred.store_path or not cred.refresh_token:
+        return
+    path = Path(cred.store_path)
+    payload = read_json(path)
+    if payload is None:
+        return
+    current_access, current_refresh, _expiry = _google_material(payload)
+    if current_refresh != cred.refresh_token and current_access != cred.access_token:
+        return
+    nested = payload.get("token")
+    if isinstance(nested, dict) and isinstance(nested.get("access_token"), str):
+        nested["access_token"] = access_token
+        if refresh_token:
+            nested["refresh_token"] = refresh_token
+        _assign_expiry(nested, expires_at)
+    elif isinstance(payload.get("access_token"), str):
+        payload["access_token"] = access_token
+        if refresh_token:
+            payload["refresh_token"] = refresh_token
+        _assign_expiry(payload, expires_at)
+    elif isinstance(payload.get("token"), str):
+        payload["token"] = access_token
+        if refresh_token:
+            payload["refresh_token"] = refresh_token
+        _assign_expiry(payload, expires_at)
+    else:
+        return
+    _atomic_json(path, payload)
+
+
 def _persist_grok(cred: Credential, access_token: str, refresh_token: str | None, expires_at: datetime | None) -> None:
     if not cred.store_path:
         return
@@ -938,21 +1017,12 @@ def _persist_grok(cred: Credential, access_token: str, refresh_token: str | None
     if not isinstance(entry, dict):
         return
     entry["key"] = access_token
+    entry["access_token"] = access_token
     if refresh_token:
         entry["refresh_token"] = refresh_token
     if expires_at is not None:
         entry["expires_at"] = iso_z(expires_at)
-    temporary = path.with_name(path.name + ".tmp")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        temporary.replace(path)
-        os.chmod(path, 0o600)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            return
+    _atomic_json(path, payload)
 
 
 def _refresh_supergrok(cred: Credential, transport: Transport, now: datetime) -> Credential | None:
