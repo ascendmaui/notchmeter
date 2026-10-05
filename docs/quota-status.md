@@ -29,7 +29,7 @@ That command writes **`~/.notchmeter/quota.json`** and prints the same JSON. It 
 
 | email | provider rows |
 | --- | --- |
-| ascendmaui@gmail.com | supergrok |
+| ascendmaui@gmail.com | supergrok, antigravity |
 | johnmatveyev@gmail.com | chatgpt, supergrok, antigravity |
 | 503meds@gmail.com | antigravity |
 | ascendlifesc@gmail.com | antigravity |
@@ -43,7 +43,7 @@ The probe reads tokens the provider's own client already stored. It never asks f
 | --- | --- | --- | --- |
 | chatgpt | `scripts/quota_status.py:probe_chatgpt` | `auth.json` in `$CODEX_HOME`, else `~/.config/codex`, else `~/.codex`, and only when that file's token names the roster email | `GET https://chatgpt.com/backend-api/wham/usage` |
 | supergrok | `scripts/quota_status.py:probe_supergrok` | `~/.grok/auth.json` from `grok login` (`email` and access token `key`) | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` |
-| antigravity | `scripts/quota_status.py:probe_antigravity` | Google OAuth `access_token` in `antigravity-oauth-token` or `oauth_creds.json` under the home directory or `~/.agy-accounts/acct*`, matched by the `id_token` email | `POST https://<cloudcode-host>/v1internal:retrieveUserQuotaSummary` |
+| antigravity | `scripts/quota_status.py:probe_antigravity` | Google OAuth bearer in `token` or `access_token`, from `~/.agy-accounts/*/.gemini/antigravity-cli/antigravity-oauth-token` or `~/.gemini/oauth_creds.json` (also under a slot). Email comes from the `id_token`, otherwise from `ACCOUNT_EMAIL` in that same directory. An expired token stays `unknown`; this command does not refresh it | `POST https://<cloudcode-host>/v1internal:retrieveUserQuotaSummary` |
 
 A SuperGrok response that succeeds and does not carry a remaining number is `open` with `remaining` null. That state applies to the probe that just ran. It is not reused later.
 

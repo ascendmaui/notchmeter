@@ -33,9 +33,11 @@ ROW_KEYS = ("email", "provider", "state", "remaining", "resets_at")
 STATES = ("open", "exhausted", "unknown")
 PROVIDERS = ("chatgpt", "supergrok", "antigravity")
 
-# Roster order is the file order. johnmatveyev has three provider rows.
+# Roster order is the file order. ascendmaui and johnmatveyev each have an
+# Antigravity row beside their other providers.
 ROSTER: tuple[tuple[str, str], ...] = (
     ("ascendmaui@gmail.com", "supergrok"),
+    ("ascendmaui@gmail.com", "antigravity"),
     ("johnmatveyev@gmail.com", "chatgpt"),
     ("johnmatveyev@gmail.com", "supergrok"),
     ("johnmatveyev@gmail.com", "antigravity"),
@@ -254,17 +256,43 @@ def _antigravity_roots(home: Path, env: Mapping[str, str]) -> list[Path]:
         if not slots.is_dir():
             continue
         for child in sorted(slots.iterdir()):
-            if child.is_dir() and child.name.startswith("acct"):
+            if child.is_dir() and not child.name.startswith("."):
                 found.append(child)
     return found
+
+
+def _google_bearer(payload: dict) -> str | None:
+    """Antigravity's CLI stores the bearer as ``token``. Gemini CLI uses ``access_token``."""
+    for key in ("access_token", "token"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _google_expiry(payload: dict, bearer: str, id_token: str | None) -> datetime | None:
+    for key in ("expiry_date", "expires_at"):
+        parsed = parse_time(payload.get(key))
+        if parsed is not None:
+            return parsed
+    for raw in (bearer, id_token):
+        if not isinstance(raw, str):
+            continue
+        claims = jwt_payload(raw)
+        if not claims:
+            continue
+        parsed = parse_time(claims.get("exp"))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _google_credential(token_path: Path, root: Path, home: Path) -> tuple[Credential | None, bool]:
     payload = read_json(token_path)
     if payload is None:
         return None, False
-    token = payload.get("access_token")
-    if not isinstance(token, str) or not token.strip():
+    token = _google_bearer(payload)
+    if token is None:
         return None, False
     email = None
     id_token = payload.get("id_token")
@@ -286,8 +314,8 @@ def _google_credential(token_path: Path, root: Path, home: Path) -> tuple[Creden
     log_path = root / ".gemini" / "antigravity-cli" / "cli.log"
     return Credential(
         email=email,
-        access_token=token.strip(),
-        expires_at=parse_time(payload.get("expiry_date")),
+        access_token=token,
+        expires_at=_google_expiry(payload, token, id_token if isinstance(id_token, str) else None),
         source=display_path(token_path, home),
         logged_host=logged_code_assist_host(log_path),
     ), named

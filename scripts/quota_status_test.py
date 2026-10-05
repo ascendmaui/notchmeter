@@ -76,14 +76,21 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(observed["updated_at"], "2026-10-04T05:54:00-04:00")
         by_key = {(row["email"], row["provider"]): row for row in observed["accounts"]}
         self.assertEqual(len(by_key), 9)
+        self.assertNotIn(("ascendmaui@gmail.com", "antigravity"), by_key)
         chatgpt = by_key[("johnmatveyev@gmail.com", "chatgpt")]
         self.assertEqual(chatgpt["state"], "exhausted")
         self.assertIsNone(chatgpt["remaining"])
         self.assertEqual(chatgpt["resets_at"], "2026-10-04T06:37:00-04:00")
-        for email, provider in quota.ROSTER:
-            if provider != "antigravity":
-                continue
-            row = by_key[(email, provider)]
+        observed_antigravity = (
+            "johnmatveyev@gmail.com",
+            "503meds@gmail.com",
+            "ascendlifesc@gmail.com",
+            "ascendlifeinsurance@gmail.com",
+            "powerevllc@gmail.com",
+            "jvmsalesllc@gmail.com",
+        )
+        for email in observed_antigravity:
+            row = by_key[(email, "antigravity")]
             self.assertEqual(row["state"], "exhausted")
             self.assertIsNone(row["remaining"])
             self.assertEqual(row["resets_at"], "2026-10-07T16:32:00-04:00")
@@ -291,6 +298,88 @@ class ProbeTests(unittest.TestCase):
             "daily-cloudcode-pa.googleapis.com",
             "cloudcode-pa.googleapis.com",
         })
+
+    def test_antigravity_oauth_token_uses_token_field_and_account_email(self):
+        """The CLI file is ``token`` / ``auth_method`` / ``id_token``, not ``access_token``."""
+        slots = {
+            "acct2": "ascendmaui@gmail.com",
+            "acct3": "503meds@gmail.com",
+            "acct4": "ascendlifesc@gmail.com",
+            "acct5": "ascendlifeinsurance@gmail.com",
+            "acct6": "powerevllc@gmail.com",
+            "acct7": "jvmsalesllc@gmail.com",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            written = []
+            for name, email in slots.items():
+                slot = home / ".agy-accounts" / name
+                (slot / ".gemini" / "antigravity-cli").mkdir(parents=True)
+                (slot / "ACCOUNT_EMAIL").write_text(email + "\n", encoding="utf-8")
+                bearer = f"agy-bearer-{name}"
+                # acct2 has no email claim, so the address has to come from ACCOUNT_EMAIL.
+                claims = {"sub": name} if name == "acct2" else {"email": email, "exp": 1_800_000_000}
+                path = slot / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+                path.write_text(json.dumps({
+                    "token": bearer,
+                    "auth_method": "google",
+                    "id_token": jwt(claims),
+                    "refresh_token": "do-not-refresh",
+                }), encoding="utf-8")
+                written.append(path.read_text(encoding="utf-8"))
+
+            def handler(method, url, headers, body):
+                token = headers["Authorization"].removeprefix("Bearer ")
+                self.assertTrue(token.startswith("agy-bearer-"))
+                self.assertNotIn("do-not-refresh", token)
+                self.assertNotIn("refresh_token", headers.get("Authorization", ""))
+                fraction = int(token.removeprefix("agy-bearer-acct")) / 10
+                return 200, {"groups": [{"displayName": "Gemini models", "buckets": [
+                    {"window": "5h", "remainingFraction": fraction, "resetTime": "2026-12-02T00:00:00Z"},
+                ]}]}
+
+            transport = RecordingTransport(handler)
+            report, notes = quota.build_report(home, env={}, now=NOW, transport=transport)
+            for path, original in zip(
+                [home / ".agy-accounts" / name / ".gemini" / "antigravity-cli" / "antigravity-oauth-token" for name in slots],
+                written,
+            ):
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+        by_key = {(row["email"], row["provider"]): row for row in report["accounts"]}
+        for index, email in enumerate(slots.values(), start=2):
+            built = by_key[(email, "antigravity")]
+            self.assertEqual(built["state"], "open")
+            self.assertEqual(built["remaining"], index / 10)
+            self.assertEqual(built["resets_at"], "2026-12-02T00:00:00Z")
+        self.assertTrue(all(note.state == "open" for note in notes if note.provider == "antigravity" and note.email in slots.values()))
+        self.assertNotIn("do-not-refresh", json.dumps(report))
+
+    def test_expired_antigravity_token_is_not_refreshed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            slot = home / ".agy-accounts" / "acct2"
+            token_dir = slot / ".gemini" / "antigravity-cli"
+            token_dir.mkdir(parents=True)
+            (slot / "ACCOUNT_EMAIL").write_text("ascendmaui@gmail.com\n", encoding="utf-8")
+            path = token_dir / "antigravity-oauth-token"
+            path.write_text(json.dumps({
+                "token": jwt({"exp": 1_500_000_000}),
+                "auth_method": "google",
+                "id_token": jwt({"email": "ascendmaui@gmail.com", "exp": 1_500_000_000}),
+                "refresh_token": "do-not-refresh",
+            }), encoding="utf-8")
+            original = path.read_text(encoding="utf-8")
+            transport = RecordingTransport(refuse)
+            report, notes = quota.build_report(home, env={}, now=NOW, transport=transport)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+        self.assertEqual(transport.calls, [])
+        row = next(item for item in report["accounts"] if item["email"] == "ascendmaui@gmail.com" and item["provider"] == "antigravity")
+        self.assertEqual(row["state"], "unknown")
+        self.assertIsNone(row["remaining"])
+        self.assertIsNone(row["resets_at"])
+        detail = next(note.detail for note in notes if note.email == "ascendmaui@gmail.com" and note.provider == "antigravity")
+        self.assertIn("expired", detail)
+        self.assertNotIn("do-not-refresh", json.dumps(report))
 
     def test_expired_token_is_not_sent(self):
         with tempfile.TemporaryDirectory() as tmp:
