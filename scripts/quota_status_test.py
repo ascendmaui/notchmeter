@@ -896,17 +896,19 @@ class ProbeTests(unittest.TestCase):
 
     def test_agy_client_prefix_is_preferred_and_other_clients_are_ignored(self):
         prefix = "GOC" + "SPX-"
+        other = "o" * quota._GOOGLE_SECRET_LENGTH
+        slot = "s" * quota._GOOGLE_SECRET_LENGTH
         text = (
-            f"1111111111-other.apps.googleusercontent.com {prefix}othersec "
-            f"1071006060591-slot.apps.googleusercontent.com {prefix}slotsec"
+            f"1111111111-other.apps.googleusercontent.com {prefix}{other} "
+            f"1071006060591-slot.apps.googleusercontent.com {prefix}{slot}"
         )
         found = quota.oauth_client_from_text(text, quota.AGY_CLIENT_PREFIX)
         self.assertEqual(found, (
             "1071006060591-slot.apps.googleusercontent.com",
-            prefix + "slotsec",
+            prefix + slot,
         ))
         self.assertIsNone(quota.oauth_client_from_text(
-            f"1111111111-other.apps.googleusercontent.com {prefix}othersec",
+            f"1111111111-other.apps.googleusercontent.com {prefix}{other}",
             quota.AGY_CLIENT_PREFIX,
         ))
         discovered = quota.discover_agy_oauth_client({
@@ -914,6 +916,80 @@ class ProbeTests(unittest.TestCase):
             "NOTCHMETER_AGY_OAUTH_CLIENT_SECRET": "from-env",
         })
         self.assertEqual(discovered, ("1071006060591-fromenv.apps.googleusercontent.com", "from-env"))
+
+    def test_adjacent_google_secrets_are_not_glued_together(self):
+        prefix = "GOC" + "SPX-"
+        nearer = "A" * quota._GOOGLE_SECRET_LENGTH
+        farther = "B" * quota._GOOGLE_SECRET_LENGTH
+        glued = prefix + nearer + prefix + farther
+        text = f"1071006060591-slot.apps.googleusercontent.com {glued}"
+        found = quota.oauth_client_from_text(text, quota.AGY_CLIENT_PREFIX)
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], "1071006060591-slot.apps.googleusercontent.com")
+        self.assertEqual(found[1], prefix + nearer)
+        self.assertEqual(len(found[1]) - len(prefix), quota._GOOGLE_SECRET_LENGTH)
+        self.assertNotIn(prefix, found[1][len(prefix):])
+        self.assertNotEqual(found[1], glued)
+        candidates = quota.oauth_client_candidates(text, quota.AGY_CLIENT_PREFIX)
+        self.assertEqual(candidates, (
+            "1071006060591-slot.apps.googleusercontent.com",
+            prefix + nearer,
+            prefix + farther,
+        ))
+        self.assertNotIn(glued, candidates)
+
+    def test_antigravity_refresh_tries_the_next_secret_when_the_nearest_fails(self):
+        prefix = "GOC" + "SPX-"
+        nearer = prefix + ("A" * quota._GOOGLE_SECRET_LENGTH)
+        farther = prefix + ("B" * quota._GOOGLE_SECRET_LENGTH)
+        client_id = "1071006060591-slot.apps.googleusercontent.com"
+        glued = nearer + farther
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            slot = home / ".agy-accounts" / "acct2"
+            token_dir = slot / ".gemini" / "antigravity-cli"
+            token_dir.mkdir(parents=True)
+            (slot / "ACCOUNT_EMAIL").write_text("ascendmaui@gmail.com\n", encoding="utf-8")
+            (token_dir / "antigravity-oauth-token").write_text(json.dumps({
+                "token": {
+                    "access_token": "ya29.expired",
+                    "refresh_token": "nested-refresh",
+                    "expiry": "2020-01-01T00:00:00Z",
+                },
+                "auth_method": "google",
+                "id_token": jwt({"email": "ascendmaui@gmail.com"}),
+            }), encoding="utf-8")
+            tried = []
+
+            def handler(method, url, headers, body):
+                if url == quota.GOOGLE_TOKEN_URL:
+                    form = urllib.parse.parse_qs(body.decode())
+                    secret = form["client_secret"][0]
+                    tried.append(secret)
+                    self.assertNotEqual(secret, glued)
+                    self.assertNotIn(prefix, secret[len(prefix):])
+                    if secret == nearer:
+                        return 400, {"error": "invalid_client"}
+                    self.assertEqual(secret, farther)
+                    return 200, {"access_token": "ya29.fresh", "expires_in": 3600}
+                self.assertEqual(headers["Authorization"], "Bearer ya29.fresh")
+                self.assertEqual(headers["User-Agent"], "antigravity")
+                return 200, {"groups": [{"displayName": "Gemini models", "buckets": [
+                    {"window": "weekly", "remainingFraction": 0.4, "resetTime": "2026-12-02T00:00:00Z"},
+                ]}]}
+
+            report, _notes = quota.build_report(
+                home,
+                env={},
+                now=NOW,
+                transport=RecordingTransport(handler),
+                oauth_clients={"antigravity": (client_id, nearer, farther)},
+            )
+        self.assertEqual(tried, [nearer, farther])
+        row = next(item for item in report["accounts"] if item["email"] == "ascendmaui@gmail.com" and item["provider"] == "antigravity")
+        self.assertEqual(row["state"], "open")
+        self.assertEqual(row["remaining"], 0.4)
+        self.assertNotIn(glued, json.dumps(report))
 
 
 if __name__ == "__main__":

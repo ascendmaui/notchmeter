@@ -77,8 +77,13 @@ OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 # paired with it from `agy` at runtime and is never stored in this repository.
 AGY_CLIENT_PREFIX = "1071006060591-"
 _GOOGLE_SECRET_PREFIX = "GOC" + "SPX-"
+# Google client secrets are 28 characters after the prefix. A longer match
+# glues the next secret onto the first when `strings` prints them back to back.
+_GOOGLE_SECRET_LENGTH = 28
 GOOGLE_CLIENT_RE = re.compile(r"\d{10,}-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com")
-GOOGLE_SECRET_RE = re.compile(re.escape(_GOOGLE_SECRET_PREFIX) + r"[A-Za-z0-9_-]+")
+GOOGLE_SECRET_RE = re.compile(
+    re.escape(_GOOGLE_SECRET_PREFIX) + rf"[A-Za-z0-9_-]{{{_GOOGLE_SECRET_LENGTH}}}"
+)
 
 PATH_CHATGPT = "scripts/quota_status.py:probe_chatgpt"
 PATH_SUPERGROK = "scripts/quota_status.py:probe_supergrok"
@@ -745,13 +750,34 @@ def _json_body(payload: bytes) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def oauth_client_from_text(text: str, prefer_prefix: str | None = None) -> tuple[str, str] | None:
-    """Pair a Google client id with the nearest client secret in ``text``.
+def _valid_google_secret(secret: str) -> bool:
+    prefix = _GOOGLE_SECRET_PREFIX
+    if not secret.startswith(prefix):
+        return False
+    body = secret[len(prefix):]
+    if len(body) != _GOOGLE_SECRET_LENGTH:
+        return False
+    if prefix in body:
+        return False
+    return True
 
-    When ``prefer_prefix`` is set, only a client id with that prefix is returned.
+
+def _secret_gap(secret: re.Match[str], chosen: re.Match[str]) -> tuple[int, int]:
+    if secret.end() <= chosen.start():
+        return chosen.start() - secret.end(), 1
+    if chosen.end() <= secret.start():
+        return secret.start() - chosen.end(), 0
+    return 0, 0
+
+
+def oauth_client_candidates(text: str, prefer_prefix: str | None = None) -> tuple[str, ...] | None:
+    """Return a client id and the nearest valid secrets, closest first.
+
+    A secret that still contains a second prefix, or is not 28 characters, is
+    skipped. When ``prefer_prefix`` is set, only that client id is used.
     """
     ids = list(GOOGLE_CLIENT_RE.finditer(text))
-    secrets = list(GOOGLE_SECRET_RE.finditer(text))
+    secrets = [match for match in GOOGLE_SECRET_RE.finditer(text) if _valid_google_secret(match.group(0))]
     if not ids or not secrets:
         return None
     chosen = None
@@ -764,31 +790,40 @@ def oauth_client_from_text(text: str, prefer_prefix: str | None = None) -> tuple
             return None
     else:
         chosen = ids[0]
+    picked: list[str] = []
+    for match in sorted(secrets, key=lambda item: _secret_gap(item, chosen)):
+        value = match.group(0)
+        if value in picked:
+            continue
+        picked.append(value)
+        if len(picked) == 4:
+            break
+    if not picked:
+        return None
+    return (chosen.group(0), *picked)
 
-    def gap(secret: re.Match[str]) -> tuple[int, int]:
-        if secret.end() <= chosen.start():
-            return chosen.start() - secret.end(), 1
-        if chosen.end() <= secret.start():
-            return secret.start() - chosen.end(), 0
-        return 0, 0
 
-    secret = min(secrets, key=gap)
-    return chosen.group(0), secret.group(0)
+def oauth_client_from_text(text: str, prefer_prefix: str | None = None) -> tuple[str, str] | None:
+    """Pair a Google client id with the nearest single client secret in ``text``."""
+    candidates = oauth_client_candidates(text, prefer_prefix)
+    if candidates is None or len(candidates) < 2:
+        return None
+    return candidates[0], candidates[1]
 
 
-def discover_agy_oauth_client(env: Mapping[str, str]) -> tuple[str, str] | None:
+def discover_agy_oauth_client(env: Mapping[str, str]) -> tuple[str, ...] | None:
     """Read Antigravity's Google client from the environment or from ``agy``."""
     client_id = env.get("NOTCHMETER_AGY_OAUTH_CLIENT_ID", "").strip()
     client_secret = env.get("NOTCHMETER_AGY_OAUTH_CLIENT_SECRET", "").strip()
     if client_id and client_secret:
-        return client_id, client_secret
+        return (client_id, client_secret)
     binary = shutil.which("agy")
     if not binary:
         return None
     text = _binary_text(binary)
     if not text:
         return None
-    return oauth_client_from_text(text, AGY_CLIENT_PREFIX)
+    return oauth_client_candidates(text, AGY_CLIENT_PREFIX)
 
 
 def _binary_text(path: str) -> str:
@@ -827,8 +862,8 @@ def _ascii_runs(data: bytes, minimum: int = 12) -> str:
 
 def _oauth_clients(
     env: Mapping[str, str],
-    provided: Mapping[str, tuple[str, str]] | None,
-) -> Mapping[str, tuple[str, str]]:
+    provided: Mapping[str, tuple[str, ...]] | None,
+) -> Mapping[str, tuple[str, ...]]:
     if provided is not None:
         return provided
     found = discover_agy_oauth_client(env)
@@ -873,32 +908,36 @@ def _refresh_form(transport: Transport, url: str, fields: dict[str, str]) -> dic
 def _refresh_google(
     cred: Credential,
     transport: Transport,
-    client: tuple[str, str],
+    client: tuple[str, ...],
     now: datetime,
 ) -> Credential | None:
-    client_id, client_secret = client
-    if not cred.refresh_token or not client_id or not client_secret:
+    if len(client) < 2 or not cred.refresh_token or not client[0]:
         return None
-    document = _refresh_form(transport, GOOGLE_TOKEN_URL, {
-        "grant_type": "refresh_token",
-        "refresh_token": cred.refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
-    })
-    if document is None:
-        return None
-    issued = _issued(document, now)
-    if issued is None:
-        return None
-    access, refresh, expires = issued
-    kept_refresh = refresh or cred.refresh_token
-    _persist_google(cred, access, kept_refresh, expires)
-    return replace(
-        cred,
-        access_token=access,
-        expires_at=expires,
-        refresh_token=kept_refresh,
-    )
+    client_id = client[0]
+    for client_secret in client[1:]:
+        if not client_secret:
+            continue
+        document = _refresh_form(transport, GOOGLE_TOKEN_URL, {
+            "grant_type": "refresh_token",
+            "refresh_token": cred.refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        })
+        if document is None:
+            continue
+        issued = _issued(document, now)
+        if issued is None:
+            continue
+        access, refresh, expires = issued
+        kept_refresh = refresh or cred.refresh_token
+        _persist_google(cred, access, kept_refresh, expires)
+        return replace(
+            cred,
+            access_token=access,
+            expires_at=expires,
+            refresh_token=kept_refresh,
+        )
+    return None
 
 
 def _refresh_openai(cred: Credential, transport: Transport, now: datetime) -> Credential | None:
@@ -1044,7 +1083,7 @@ def _refresh_supergrok(cred: Credential, transport: Transport, now: datetime) ->
     return replace(cred, access_token=access, expires_at=expires, refresh_token=kept_refresh)
 
 
-def _refresh_ready(cred: Credential, clients: Mapping[str, tuple[str, str]]) -> bool:
+def _refresh_ready(cred: Credential, clients: Mapping[str, tuple[str, ...]]) -> bool:
     if not cred.refresh_token:
         return False
     if cred.oauth_kind == "supergrok":
@@ -1053,7 +1092,7 @@ def _refresh_ready(cred: Credential, clients: Mapping[str, tuple[str, str]]) -> 
         return True
     if cred.oauth_kind == "antigravity":
         client = clients.get("antigravity")
-        return client is not None and bool(client[0]) and bool(client[1])
+        return client is not None and len(client) >= 2 and bool(client[0]) and any(client[1:])
     if cred.oauth_kind == "gemini":
         return False
     return False
@@ -1062,7 +1101,7 @@ def _refresh_ready(cred: Credential, clients: Mapping[str, tuple[str, str]]) -> 
 def _silent_refresh(
     cred: Credential,
     transport: Transport,
-    clients: Mapping[str, tuple[str, str]],
+    clients: Mapping[str, tuple[str, ...]],
     now: datetime,
 ) -> Credential | None:
     if cred.oauth_kind == "supergrok":
@@ -1085,7 +1124,7 @@ def probe_chatgpt(
     expired: list[Credential],
     nameless: int,
     transport: Transport,
-    clients: Mapping[str, tuple[str, str]],
+    clients: Mapping[str, tuple[str, ...]],
     now: datetime,
 ) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
@@ -1112,7 +1151,7 @@ def probe_supergrok(
     expired: list[Credential],
     nameless: int,
     transport: Transport,
-    clients: Mapping[str, tuple[str, str]],
+    clients: Mapping[str, tuple[str, ...]],
     now: datetime,
 ) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
@@ -1139,7 +1178,7 @@ def probe_antigravity(
     expired: list[Credential],
     nameless: int,
     transport: Transport,
-    clients: Mapping[str, tuple[str, str]],
+    clients: Mapping[str, tuple[str, ...]],
     now: datetime,
 ) -> tuple[dict, Note]:
     def call(cred: Credential) -> tuple[str, int | float | None, str | None] | None:
@@ -1314,7 +1353,7 @@ def build_report(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     transport: Transport | None = None,
-    oauth_clients: Mapping[str, tuple[str, str]] | None = None,
+    oauth_clients: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[dict, list[Note]]:
     environment = env if env is not None else os.environ
     moment = now if now is not None else datetime.now(timezone.utc)
