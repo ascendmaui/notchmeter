@@ -179,6 +179,10 @@ enum ShareCardTheme: String, CaseIterable, Codable, Sendable {
         case (.white, .copilot): 0x9A8A00
         case (.white, .kimi): 0x367D24
         case (.white, .opencode): 0xA52ACB
+        case (.white, .chatgpt): 0x0B6E56
+        case (.white, .grok): 0xB84316
+        case (.white, .hermes): 0x4834B8
+        case (.white, .openclaw): 0xA84A32
         case (.black, .claude): 0xCC7555
         case (.black, .codex): 0x34A874
         case (.black, .cursor): 0x8C74EA
@@ -187,6 +191,10 @@ enum ShareCardTheme: String, CaseIterable, Codable, Sendable {
         case (.black, .copilot): 0xF0E442
         case (.black, .kimi): 0x7ED957
         case (.black, .opencode): 0xBE3CE6
+        case (.black, .chatgpt): 0x10A37F
+        case (.black, .grok): 0xFF6B35
+        case (.black, .hermes): 0x7868E6
+        case (.black, .openclaw): 0xE17055
         case (.blue, .claude): 0xF4A582
         case (.blue, .codex): 0x6EE7A8
         case (.blue, .cursor): 0xC3B3FF
@@ -195,6 +203,10 @@ enum ShareCardTheme: String, CaseIterable, Codable, Sendable {
         case (.blue, .copilot): 0xF0E442
         case (.blue, .kimi): 0xA6EB86
         case (.blue, .opencode): 0xDDA6F2
+        case (.blue, .chatgpt): 0x5AD1B0
+        case (.blue, .grok): 0xFFB088
+        case (.blue, .hermes): 0xA29BFE
+        case (.blue, .openclaw): 0xFAB1A0
         }
     }
 
