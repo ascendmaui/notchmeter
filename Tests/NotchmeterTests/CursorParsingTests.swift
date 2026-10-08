@@ -537,3 +537,214 @@ private extension Data {
         defaults.removePersistentDomain(forName: "NotchmeterTests.RegistryWiring")
     }
 }
+
+/// Cursor provider fetching against summary and legacy endpoints, tested through an ephemeral URLSession stub.
+@Suite(.serialized) struct CursorFetching {
+    init() { Localization.use(language: "en") }
+
+    final class StubProtocol: URLProtocol {
+        nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data))?
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func stopLoading() {}
+
+        override func startLoading() {
+            guard let handler = Self.handler else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            let (status, headers, body) = handler(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    func session(handler: @escaping @Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data)) -> URLSession {
+        StubProtocol.handler = handler
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func makeDatabase(token: String?) throws -> (dir: URL, db: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-cursor-fetch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let db = dir.appendingPathComponent("state.vscdb")
+        var handle: OpaquePointer?
+        #expect(sqlite3_open(db.path, &handle) == SQLITE_OK)
+        sqlite3_exec(handle, "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB);", nil, nil, nil)
+        if let token {
+            sqlite3_exec(handle, "INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', '\(token)');", nil, nil, nil)
+        }
+        sqlite3_close(handle)
+        return (dir, db)
+    }
+
+    func validToken(exp: Double = 4_102_444_800) -> String {
+        let payload = #"{"sub":"auth0|user_01ABC","exp":\#(exp)}"#
+        let encoded = Data(payload.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return "eyJhbGciOiJIUzI1NiJ9.\(encoded).signature"
+    }
+
+    @Test func fetchThrowsNotSignedInWhenDatabaseHasNoToken() async throws {
+        let (dir, db) = try makeDatabase(token: nil)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in (200, [:], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected not signed in")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(error == .notSignedIn(L("Sign in to Cursor in the editor to read your usage")))
+        }
+    }
+
+    @Test func fetchThrowsTokenExpiredWhenTokenIsPastExpiry() async throws {
+        let expiredToken = validToken(exp: 1000)
+        let (dir, db) = try makeDatabase(token: expiredToken)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in (200, [:], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected token expired")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(error == .tokenExpired(L("Cursor's login has expired. Open Cursor once so it signs back in")))
+        }
+    }
+
+    @Test func fetchMaps401And403ToNotSignedIn() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        for status in [401, 403] {
+            let s = session { _ in (status, [:], Data("refused".utf8)) }
+            let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+            do {
+                _ = try await provider.fetch()
+                Issue.record("expected refusal")
+            } catch let error as ProviderError {
+                #expect(error.needsAttention)
+                #expect(error == .notSignedIn(L("Cursor's login was refused. Sign in to Cursor in the editor again")))
+            }
+        }
+    }
+
+    @Test func fetchFallsBackToLegacyUsageOn404() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let legacyJSON = """
+        {"gpt-4":{"numRequests":25,"maxRequestUsage":100}}
+        """
+        let s = session { req in
+            if req.url?.path == "/api/usage-summary" {
+                return (404, [:], Data())
+            }
+            if req.url?.path == "/api/usage" {
+                #expect(req.url?.query?.contains("user=user_01ABC") == true)
+                return (200, ["Content-Type": "application/json"], Data(legacyJSON.utf8))
+            }
+            return (404, [:], Data())
+        }
+
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        let reading = try await provider.fetch()
+        #expect(reading.tool == .cursor)
+        #expect(reading.windows.count == 1)
+        #expect(reading.windows[0].id == "requests")
+        #expect(reading.windows[0].usedFraction == 0.25)
+    }
+
+    @Test func fetchThrowsHttpErrorWhenLegacyAlsoFailsOn404() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in (404, [:], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected http error")
+        } catch let error as ProviderError {
+            #expect(error == .http(404, L("Cursor usage endpoint answered")))
+            #expect(!error.needsAttention)
+        }
+    }
+
+    @Test func fetchMaps429ToRateLimitedWithRetryAfter() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in (429, ["Retry-After": "180"], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected rate limited")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            #expect(error == .rateLimited(retryAfter: 180))
+        }
+    }
+
+    @Test func fetchMaps500ToHttpError() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in (500, [:], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected http error")
+        } catch let error as ProviderError {
+            #expect(error == .http(500, L("Cursor usage endpoint answered")))
+            #expect(!error.needsAttention)
+        }
+    }
+
+    @Test func fetchAppliesPeriodAndSandUsageWhenUnmeteredHeadline() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let summaryJSON = """
+        {"billingCycleStart":"2026-08-24T05:12:03Z","billingCycleEnd":"2026-09-24T05:12:03Z",
+         "membershipType":"enterprise","limitType":"user","isUnlimited":false,
+         "individualUsage":{"plan":{"enabled":true,"used":0,"limit":null,"remaining":null,"totalPercentUsed":null}}}
+        """
+        let periodJSON = """
+        {"planUsage":{"includedSpend":700,"limit":2000}}
+        """
+        let sandJSON = """
+        {"includedLimitZero":false,"usagePercent":50}
+        """
+
+        let s = session { req in
+            if req.url?.path == "/api/usage-summary" {
+                return (200, ["Content-Type": "application/json"], Data(summaryJSON.utf8))
+            }
+            if req.url?.path == "/api/dashboard/get-current-period-usage" {
+                return (200, ["Content-Type": "application/json"], Data(periodJSON.utf8))
+            }
+            if req.url?.path == "/api/dashboard/get-sand-usage-status" {
+                return (200, ["Content-Type": "application/json"], Data(sandJSON.utf8))
+            }
+            return (404, [:], Data())
+        }
+
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        let reading = try await provider.fetch()
+        let ids = reading.windows.map(\.id)
+        #expect(ids.contains("grok_bot"))
+        let grokBot = try #require(reading.windows.first { $0.id == "grok_bot" })
+        #expect(grokBot.usedFraction == 0.5)
+        let included = try #require(reading.windows.first { $0.id == "included" })
+        #expect(included.usedFraction == 0.35)
+    }
+}
