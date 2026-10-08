@@ -12,6 +12,7 @@ private let log = Logger(subsystem: "com.amirhackett.notchmeter", category: "cop
 actor CopilotProvider: UsageProvider {
     nonisolated let tool: ToolID = .copilot
     nonisolated let refreshInterval: TimeInterval = 300
+    nonisolated let home: URL
     nonisolated let configRoot: URL
     nonisolated let ghHosts: URL
 
@@ -42,13 +43,15 @@ actor CopilotProvider: UsageProvider {
     private let defaults: UserDefaults
 
     init(session: URLSession? = nil,
-         configRoot: URL = Paths.home.appendingPathComponent(".config/github-copilot"),
-         ghHosts: URL = Paths.home.appendingPathComponent(".config/gh/hosts.yml"),
+         home: URL = Paths.home,
+         configRoot: URL? = nil,
+         ghHosts: URL? = nil,
          defaults: UserDefaults = .standard, readOrgBilling: (@Sendable () -> Bool)? = nil,
          history: CostHistory? = CostHistory(tool: .copilot)) {
         self.session = session
-        self.configRoot = configRoot
-        self.ghHosts = ghHosts
+        self.home = home
+        self.configRoot = configRoot ?? home.appendingPathComponent(".config/github-copilot")
+        self.ghHosts = ghHosts ?? home.appendingPathComponent(".config/gh/hosts.yml")
         self.defaults = defaults
         self.readOrgBilling = readOrgBilling ?? ProviderOptIn.copilotOrgBilling.reader(defaults)
         self.history = history
@@ -56,8 +59,8 @@ actor CopilotProvider: UsageProvider {
 
     nonisolated func isInstalled() -> Bool {
         let fm = FileManager.default
-        return fm.fileExists(atPath: configRoot.path) || fm.fileExists(atPath: Paths.home.appendingPathComponent(".vscode/extensions").path)
-            && (try? fm.contentsOfDirectory(atPath: Paths.home.appendingPathComponent(".vscode/extensions").path))?.contains { $0.hasPrefix("github.copilot") } == true
+        return fm.fileExists(atPath: configRoot.path) || fm.fileExists(atPath: home.appendingPathComponent(".vscode/extensions").path)
+            && (try? fm.contentsOfDirectory(atPath: home.appendingPathComponent(".vscode/extensions").path))?.contains { $0.hasPrefix("github.copilot") } == true
     }
 
     func fetch() async throws -> UsageReading {
