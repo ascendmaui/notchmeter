@@ -665,4 +665,32 @@ import Testing
         let providerInstalledExt = CopilotProvider(home: dir, configRoot: config)
         #expect(providerInstalledExt.isInstalled())
     }
+
+    @Test func tokenCandidatesResolvesKeychainTokenWhenHostsYMLLacksPlaintextToken() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-kc-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        let gh = dir.appendingPathComponent("gh/hosts.yml")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        try fm.createDirectory(at: gh.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // hosts.yml without plaintext oauth_token (e.g. user uses keychain)
+        let hostsYAML = """
+        github.com:
+            user: john
+            git_protocol: ssh
+        """
+        try hostsYAML.write(to: gh, atomically: true, encoding: .utf8)
+
+        // 1. Without keychain token, candidates is empty
+        let emptyCandidates = CopilotProvider.tokenCandidates(configRoot: config, ghHosts: gh, keychain: { nil })
+        #expect(emptyCandidates.isEmpty)
+
+        // 2. With keychain token, candidate is found from ghHosts
+        let foundCandidates = CopilotProvider.tokenCandidates(configRoot: config, ghHosts: gh, keychain: { "gho_keychain_secret" })
+        #expect(foundCandidates.count == 1)
+        #expect(foundCandidates[0].token == "gho_keychain_secret")
+        #expect(foundCandidates[0].file == gh)
+    }
 }

@@ -135,9 +135,9 @@ actor CopilotProvider: UsageProvider {
     // MARK: - Token
 
     /// `apps.json` and `hosts.json` map "github.com:<client id>" to `{"user", "oauth_token"}`; gh's hosts.yml keeps
-    /// `github.com:\n  oauth_token: …`. Every entry is a candidate, ordered by its file's modification date, newest
-    /// first, then by file name; duplicates of one token are folded.
-    static func tokenCandidates(configRoot: URL, ghHosts: URL) -> [TokenCandidate] {
+    /// `github.com:\n  oauth_token: …` or delegates to the Keychain (`gh:github.com`). Every entry is a candidate,
+    /// ordered by its file's modification date, newest first, then by file name; duplicates of one token are folded.
+    static func tokenCandidates(configRoot: URL, ghHosts: URL, keychain: () -> String? = { defaultKeychainToken() }) -> [TokenCandidate] {
         var candidates: [TokenCandidate] = []
         for name in ["apps.json", "hosts.json"] {
             let file = configRoot.appendingPathComponent(name)
@@ -151,13 +151,24 @@ actor CopilotProvider: UsageProvider {
                 }
             }
         }
-        if let text = try? String(contentsOf: ghHosts, encoding: .utf8), let token = token(inHostsYAML: text) {
+        if let text = try? String(contentsOf: ghHosts, encoding: .utf8) {
             let modified = (try? ghHosts.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            candidates.append(TokenCandidate(token: token, file: ghHosts, modified: modified))
+            if let token = token(inHostsYAML: text) {
+                candidates.append(TokenCandidate(token: token, file: ghHosts, modified: modified))
+            } else if let token = keychain() {
+                candidates.append(TokenCandidate(token: token, file: ghHosts, modified: modified))
+            }
         }
         var seen: Set<String> = []
         return candidates.sorted { ($0.modified, $1.file.lastPathComponent) > ($1.modified, $0.file.lastPathComponent) }
             .filter { seen.insert($0.token).inserted }
+    }
+
+    static func defaultKeychainToken() -> String? {
+        guard let data = Keychain.genericPasswordViaSecurityTool(service: "gh:github.com"),
+              let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else { return nil }
+        return text
     }
 
     /// The first candidate's token, for callers that want one; nil with none.
