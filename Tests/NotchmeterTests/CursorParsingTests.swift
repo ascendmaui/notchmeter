@@ -118,6 +118,47 @@ import Testing
         #expect(CursorProvider.percent(in: "No figure here") == nil)
     }
 
+    @Test func parsesTeamPooledUsageWhenTeamScoped() throws {
+        let json = """
+        {"billingCycleStart":"2026-09-01T00:00:00.000Z","billingCycleEnd":"2026-10-01T00:00:00.000Z",
+         "membershipType":"business","limitType":"team","isUnlimited":false,
+         "individualUsage":{"plan":{"enabled":true,"used":1000,"limit":5000,"totalPercentUsed":20}},
+         "teamUsage":{"pooled":{"limit":20000,"used":8000,"totalPercentUsed":40}}}
+        """
+        let reading = try CursorProvider.parseSummary(Data(json.utf8))
+        #expect(reading.plan == "Business")
+        #expect(reading.windows.count >= 2)
+        #expect(reading.windows[0].id == "team_pooled")
+        #expect(reading.windows[0].label == "Team pooled")
+        #expect(reading.windows[0].usedFraction == 0.4)
+        #expect(reading.windows[0].note == "$80 of $200")
+        #expect(reading.windows[0].amountUSD == 80.0)
+        #expect(reading.windows[1].id == "included")
+        #expect(reading.windows[1].usedFraction == 0.2)
+    }
+
+    @Test func parsesOnDemandSpendWithoutLimit() throws {
+        let json = """
+        {"billingCycleEnd":"2026-09-24T05:12:03.105Z","membershipType":"pro","isUnlimited":false,
+         "individualUsage":{"plan":{"enabled":true,"used":2000,"limit":2000,"totalPercentUsed":100},
+                            "onDemand":{"enabled":true,"used":1550,"limit":0}}}
+        """
+        let reading = try CursorProvider.parseSummary(Data(json.utf8))
+        let onDemand = try #require(reading.windows.first { $0.id == "on_demand" })
+        #expect(onDemand.usedFraction == nil)
+        #expect(onDemand.note == "$15.50 so far, no limit set")
+        #expect(onDemand.amountUSD == 15.5)
+    }
+
+    @Test func handlesMalformedSummaryJSON() {
+        #expect(throws: ProviderError.self) {
+            try CursorProvider.parseSummary(Data("invalid json".utf8))
+        }
+        #expect(throws: ProviderError.self) {
+            try CursorProvider.parseLegacyUsage(Data("{}".utf8))
+        }
+    }
+
     /// With no included allowance every summary figure stays at 0 %, so the export's dollars carry the ring:
     /// today against the average day of the history before it, filling at a usual day and counting on past it.
     @Test func anUnmeteredSeatGetsTodaysSpendAgainstAUsualDay() throws {

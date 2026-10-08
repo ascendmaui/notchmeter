@@ -127,6 +127,29 @@ import Testing
         #expect(CopilotProvider.creditsUsed(Data(#"{"copilot_plan":"pro","quota_snapshots":{"chat":{"entitlement":50}}}"#.utf8)) == nil)
     }
 
+    @Test func parsesEnterprisePlanWithResetDate() throws {
+        let json = """
+        {"copilot_plan":"enterprise","quota_reset_date":"2026-11-01",
+         "quota_snapshots":{"premium_interactions":{"unlimited":true}}}
+        """
+        let reading = try CopilotProvider.parseUser(Data(json.utf8))
+        #expect(reading.plan == "Enterprise")
+        #expect(reading.windows.count == 1)
+        #expect(reading.windows[0].id == "premium")
+        #expect(reading.windows[0].usedFraction == nil)
+        #expect(reading.windows[0].note == "Unlimited on the Enterprise plan")
+        #expect(reading.windows[0].resetsAt == CopilotProvider.resetDate("2026-11-01"))
+    }
+
+    @Test func rejectsUnparseableUserResponses() {
+        #expect(throws: ProviderError.self) {
+            try CopilotProvider.parseUser(Data("not json".utf8))
+        }
+        #expect(throws: ProviderError.self) {
+            try CopilotProvider.parseUser(Data(#"{"unrelated":"value"}"#.utf8))
+        }
+    }
+
     /// The free individual as GitHub answers it today (openusage's live fixture): a premium placeholder under
     /// `percent_remaining: 0`, which is not a full bar, beside the two quotas that are metered. The counts arrive
     /// as strings on some seats, and `quota_reset_date_utc` is a reset too.

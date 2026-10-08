@@ -112,6 +112,49 @@ import Testing
         #expect(CodeAssistProvider.groupName("Models") == "Models")
     }
 
+    @Test func parsesGeminiQuotaWithToolIDGemini() throws {
+        let json = """
+        {"buckets":[
+          {"modelId":"gemini-2.5-pro","remainingFraction":0.7,"resetTime":"\(resetsAt)"},
+          {"modelId":"gemini-2.5-flash","remainingFraction":0.85,"resetTime":"\(resetsAt)"}
+        ]}
+        """
+        let reading = try CodeAssistProvider.parseQuota(Data(json.utf8), plan: "Google One AI Pro", tool: .gemini)
+        #expect(reading.tool == .gemini)
+        #expect(reading.plan == "Google One AI Pro")
+        #expect(reading.windows.map(\.id) == ["gemini_pro", "gemini_flash"])
+        #expect(reading.windows.map(\.label) == ["Gemini Pro", "Gemini Flash"])
+        let used = reading.windows.compactMap(\.usedFraction)
+        #expect(abs(used[0] - 0.3) < 1e-9)
+        #expect(abs(used[1] - 0.15) < 1e-9)
+    }
+
+    @Test func parsesGeminiQuotaSummaryWithToolIDGemini() throws {
+        let json = """
+        {"groups":[{"displayName":"Gemini Models","buckets":[
+                      {"bucketId":"gemini-5h","displayName":"Session Limit","window":"5h","resetTime":"2026-09-01T17:00:00Z","remainingFraction":0.4},
+                      {"bucketId":"gemini-weekly","displayName":"Weekly Limit","window":"weekly","resetTime":"\(resetsAt)","remaining":{"remainingFraction":0.6}}]}]}
+        """
+        let reading = try CodeAssistProvider.parseQuotaSummary(Data(json.utf8), plan: "Standard", tool: .gemini)
+        #expect(reading.tool == .gemini)
+        #expect(reading.plan == "Standard")
+        #expect(reading.windows.map(\.id) == ["gemini_session", "gemini_weekly"])
+        #expect(reading.windows.map(\.label) == ["Gemini Session", "Gemini Weekly"])
+        #expect(reading.windows[0].periodDuration == Period.fiveHours)
+        #expect(reading.windows[1].periodDuration == Period.week)
+    }
+
+    @Test func unmeteredDetectionRequiresIdenticalResets() throws {
+        let staggered = """
+        {"buckets":[{"modelId":"gemini-2.5-pro","remainingFraction":1,"resetTime":"2026-09-02T07:00:00Z"},
+                    {"modelId":"gemini-2.5-flash","remainingFraction":1,"resetTime":"2026-09-02T07:05:00Z"}]}
+        """
+        let reading = try CodeAssistProvider.parseQuota(Data(staggered.utf8), plan: nil)
+        #expect(reading.windows[0].usedFraction == 0)
+        #expect(reading.windows[1].usedFraction == 0)
+        #expect(reading.windows[0].note == nil)
+    }
+
     /// The host Antigravity's own CLI logged is the one the account is metered on; anything that is not a Code
     /// Assist host is ignored, and the newest mention wins.
     @Test func theLoggedHostIsReadFromTheCLILog() {
