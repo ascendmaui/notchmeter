@@ -655,12 +655,57 @@ import Testing
         #expect(credsNoExp.accessToken == "ya29.only-token")
         #expect(credsNoExp.expiresAt == nil)
 
+        // Nested token dictionary with ISO 8601 string expiry (Antigravity CLI structure)
+        let jsonNested = """
+        {"token":{"access_token":"ya29.nested-token","expiry":"2026-10-08T12:00:00.000Z"}}
+        """
+        let credsNested = try CodeAssistProvider.parseCredentials(Data(jsonNested.utf8))
+        #expect(credsNested.accessToken == "ya29.nested-token")
+        #expect(credsNested.expiresAt == DateParsing.iso8601("2026-10-08T12:00:00.000Z"))
+
+        // String token with epoch seconds expires_at
+        let jsonStringToken = """
+        {"token":"ya29.string-tok","expires_at":1759352940}
+        """
+        let credsString = try CodeAssistProvider.parseCredentials(Data(jsonStringToken.utf8))
+        #expect(credsString.accessToken == "ya29.string-tok")
+        #expect(credsString.expiresAt == Date(timeIntervalSince1970: 1_759_352_940))
+
         #expect(throws: ProviderError.self) {
             try CodeAssistProvider.parseCredentials(Data(#"{"refresh_token":"1//x"}"#.utf8))
         }
         #expect(throws: ProviderError.self) {
             try CodeAssistProvider.parseCredentials(Data("invalid".utf8))
         }
+    }
+
+    @Test func antigravityFallsBackToAntigravityOAuthTokenWhenOAuthCredsMissing() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-fallback-\(UUID().uuidString)")
+        let geminiHome = dir.appendingPathComponent(".gemini")
+        let agyHome = geminiHome.appendingPathComponent("antigravity-cli")
+        try FileManager.default.createDirectory(at: agyHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        let tokenJSON = #"{"token":{"access_token":"ya29.from-agy-file","expiry_date":\#(expiry)}}"#
+        try Data(tokenJSON.utf8).write(to: agyHome.appendingPathComponent("antigravity-oauth-token"))
+
+        let quota = json(["buckets": [["modelId": "gemini-2.5-pro", "remainingFraction": 0.5, "resetTime": "2026-09-02T07:00:00Z"]]])
+        let account = json(["currentTier": ["id": "standard-tier"], "cloudaicompanionProject": "p-1"])
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, account)
+            case "/v1internal:retrieveUserQuota": (200, quota)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: geminiHome,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        let reading = try await antigravityProvider.fetch()
+        #expect(reading.tool == .antigravity)
+        #expect(reading.windows[0].usedFraction == 0.5)
+        #expect(exchange.seen.first?.request.value(forHTTPHeaderField: "Authorization") == "Bearer ya29.from-agy-file")
     }
 
     @Test func isInstalledChecksGeminiCredentialsAndAntigravityPresence() throws {

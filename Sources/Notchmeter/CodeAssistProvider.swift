@@ -160,14 +160,26 @@ actor CodeAssistProvider: UsageProvider {
     }
 
     func fetch() async throws -> UsageReading {
-        guard let data = try? Data(contentsOf: credentialsFile) else {
+        let data: Data
+        if let direct = try? Data(contentsOf: credentialsFile) {
+            data = direct
+        } else if tool == .antigravity, let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")) {
+            data = agyData
+        } else {
             throw ProviderError.notSignedIn(tool == .antigravity
                 ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
                 : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota"))
         }
-        let credentials = try Self.parseCredentials(data)
+        var credentials = try Self.parseCredentials(data)
         if let expiresAt = credentials.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
-            throw ProviderError.tokenExpired(expiredMessage)
+            if tool == .antigravity,
+               let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")),
+               let agyCreds = try? Self.parseCredentials(agyData),
+               (agyCreds.expiresAt == nil || (agyCreds.expiresAt?.timeIntervalSinceNow ?? 0) >= 30) {
+                credentials = agyCreds
+            } else {
+                throw ProviderError.tokenExpired(expiredMessage)
+            }
         }
         let antigravity = identifiesAsAntigravity
         let hosts = self.hosts
@@ -276,12 +288,32 @@ actor CodeAssistProvider: UsageProvider {
     // MARK: - Parsing
 
     static func parseCredentials(_ data: Data) throws -> CodeAssistCredentials {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = root["access_token"] as? String, !token.isEmpty
-        else {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
         }
-        return CodeAssistCredentials(accessToken: token, expiresAt: JSON.number(root["expiry_date"]).map { Date(timeIntervalSince1970: $0 / 1000) })
+        let nestedToken = root["token"] as? [String: Any]
+        let token: String? = (nestedToken?["access_token"] as? String)
+            ?? (root["access_token"] as? String)
+            ?? (root["token"] as? String)
+        guard let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
+        }
+        let rawExpiry = nestedToken?["expiry"] ?? nestedToken?["expiry_date"] ?? nestedToken?["expires_at"]
+            ?? root["expiry_date"] ?? root["expiry"] ?? root["expires_at"]
+        let expiresAt: Date? = parseExpiryDate(rawExpiry)
+        return CodeAssistCredentials(accessToken: token, expiresAt: expiresAt)
+    }
+
+    static func parseExpiryDate(_ value: Any?) -> Date? {
+        guard let value else { return nil }
+        if let string = value as? String {
+            return DateParsing.iso8601(string)
+        }
+        if let num = JSON.number(value) {
+            let seconds = num > 10_000_000_000 ? num / 1000 : num
+            return Date(timeIntervalSince1970: seconds)
+        }
+        return nil
     }
 
     static func parseAccount(_ data: Data) throws -> Account {
