@@ -216,4 +216,149 @@ import Testing
         #expect(windows[0]["pace"] as? String == "behind")
         #expect(windows[0]["projectedFraction"] != nil)
     }
+
+    @Test func probeReportIncludesDrainsAndRunOutIntervals() throws {
+        let key = DrainLog.Key(tool: .codex, window: "five_hour")
+        let drain = Drain(from: 0.15, to: 0.42, over: 3600)
+        let runOut = RunOutInterval(earliest: 1800, latest: 5400, sampleCount: 12)
+        let report = UsageReport(
+            tools: fiveTools,
+            order: [.codex],
+            cost: nil,
+            advice: [],
+            drains: [key: drain],
+            runOuts: [key: runOut],
+            now: now
+        )
+        let list = try tools(report)
+        let codex = try entry(list, .codex)
+        let windows = try #require(codex["windows"] as? [[String: Any]])
+        let sessionWindow = try #require(windows.first { $0["id"] as? String == "five_hour" })
+
+        let drainObject = try #require(sessionWindow["drainLastHour"] as? [String: Any])
+        #expect(JSON.number(drainObject["from"]) == 0.15)
+        #expect(JSON.number(drainObject["to"]) == 0.42)
+        #expect(JSON.number(drainObject["perHour"]) == 0.27)
+
+        let runOutObject = try #require(sessionWindow["runOut"] as? [String: Any])
+        #expect(runOutObject["earliestAt"] as? String == "2026-10-07T12:30:00.000Z")
+        #expect(runOutObject["latestAt"] as? String == "2026-10-07T13:30:00.000Z")
+        #expect(runOutObject["samples"] as? Int == 12)
+    }
+
+    @Test func probeReportIncludesSessionsAndTheirMetadata() throws {
+        var session = AgentSession(
+            id: "ses_abc123",
+            tool: .claude,
+            project: "notchmeter",
+            state: .working(since: now.addingTimeInterval(-120)),
+            started: now.addingTimeInterval(-300),
+            lastEvent: now,
+            turnStarted: now.addingTimeInterval(-120),
+            branch: "feat/probe-tests",
+            prURL: "https://github.com/ascendmaui/notchmeter/pull/7",
+            permissionMode: "plan"
+        )
+        session.source = .hook
+        let report = UsageReport(
+            tools: fiveTools,
+            order: [.codex],
+            cost: nil,
+            advice: [],
+            sessions: [session],
+            now: now
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: report.json) as? [String: Any])
+        let sessions = try #require(object["sessions"] as? [[String: Any]])
+        #expect(sessions.count == 1)
+        #expect(sessions[0]["id"] as? String == "ses_abc123")
+        #expect(sessions[0]["tool"] as? String == "claude")
+        #expect(sessions[0]["project"] as? String == "notchmeter")
+        #expect(sessions[0]["state"] as? String == "working")
+        #expect(sessions[0]["stateSeconds"] as? Int == 120)
+        #expect(sessions[0]["branch"] as? String == "feat/probe-tests")
+        #expect(sessions[0]["pr"] as? String == "https://github.com/ascendmaui/notchmeter/pull/7")
+        #expect(sessions[0]["permissionMode"] as? String == "plan")
+        #expect(sessions[0]["source"] as? String == "hook")
+    }
+
+    @Test func probeReportIncludesCostAdviceAndPromptCache() throws {
+        let todayTotals = RangeTotals(cost: 4.50, tokens: TokenBreakdown(input: 10_000, output: 500), priceSources: [.builtIn("2026-10-07")])
+        let monthTotals = RangeTotals(cost: 85.00, tokens: TokenBreakdown(input: 200_000, output: 10_000), priceSources: [.builtIn("2026-10-07")])
+        let claudeCost = ProviderCost(
+            tool: .claude,
+            source: .localTranscripts,
+            ranges: [.today: todayTotals, .last30Days: monthTotals],
+            daily: [],
+            scannedAt: now
+        )
+        let cost = CostSummary(
+            today: 4.50,
+            yesterday: 3.20,
+            last30Days: 85.00,
+            daily: [],
+            lastHour: 0.50,
+            typicalHourly: 0.40,
+            burnMultiple: 1.25,
+            unpricedModels: [],
+            scannedAt: now,
+            ranges: [.today: todayTotals, .last30Days: monthTotals],
+            providers: [claudeCost]
+        )
+        let advice = [
+            Advice(id: "adv_1", tool: .antigravity, priority: .warn, symbol: "clock", text: "Approaching 5h reset", url: URL(string: "https://antigravity.google/limits"))
+        ]
+        let promptCache = PromptCacheSummary(
+            misses: 4,
+            requests: 20,
+            rewrittenTokens: 1200,
+            rewrittenUSD: 0.03,
+            lastCause: "tools_changed",
+            sessions: 3
+        )
+        let report = UsageReport(
+            tools: fiveTools,
+            order: [.antigravity],
+            cost: cost,
+            advice: advice,
+            promptCache: promptCache,
+            now: now
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: report.json) as? [String: Any])
+
+        let costObject = try #require(object["cost"] as? [String: Any])
+        #expect(costObject["today"] as? Double == 4.5)
+        #expect(costObject["last30Days"] as? Double == 85.0)
+        #expect(costObject["priceSources"] as? [String] == ["builtIn:2026-10-07"])
+
+        let adviceList = try #require(object["advice"] as? [[String: Any]])
+        #expect(adviceList.count == 1)
+        #expect(adviceList[0]["id"] as? String == "adv_1")
+        #expect(adviceList[0]["tool"] as? String == "antigravity")
+        #expect(adviceList[0]["text"] as? String == "Approaching 5h reset")
+
+        let cacheObject = try #require(object["promptCache"] as? [String: Any])
+        #expect(cacheObject["misses"] as? Int == 4)
+        #expect(cacheObject["requests"] as? Int == 20)
+        #expect(JSON.number(cacheObject["missShare"]) == 0.2)
+        #expect(cacheObject["rewrittenTokens"] as? Int == 1200)
+        #expect(cacheObject["lastCause"] as? String == "tools_changed")
+        #expect(cacheObject["sessions"] as? Int == 3)
+    }
+
+    @Test func probeReportDecodesRoundTripVerbatim() throws {
+        let report = UsageReport(tools: fiveTools, order: [.codex, .copilot], cost: nil, advice: [], now: now)
+        let decoded = try #require(UsageReport.decode(report.json))
+        #expect(decoded.exitCode == report.exitCode)
+        let originalObject = try #require(try JSONSerialization.jsonObject(with: report.json) as? [String: Any])
+        let decodedObject = try #require(try JSONSerialization.jsonObject(with: decoded.json) as? [String: Any])
+        #expect(originalObject["schema"] as? String == decodedObject["schema"] as? String)
+        #expect(originalObject["exitCode"] as? Int == decodedObject["exitCode"] as? Int)
+
+        let limited = decoded.limited(to: .codex)
+        let limitedObject = try #require(try JSONSerialization.jsonObject(with: limited.json) as? [String: Any])
+        let limitedTools = try #require(limitedObject["tools"] as? [[String: Any]])
+        #expect(limitedTools.count == 1)
+        #expect(limitedTools[0]["tool"] as? String == "codex")
+    }
 }
