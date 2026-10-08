@@ -190,4 +190,30 @@ import Testing
         #expect(ProviderError.offline(from: URLError(.badServerResponse)) == nil)
         #expect(ProviderError.offline(from: URLError(.userAuthenticationRequired)) == nil)
     }
+
+    @Test func narrowingReportToSingleToolPreservesOnlyThatTool() throws {
+        let order: [ToolID] = [.codex, .cursor, .antigravity, .gemini, .copilot]
+        let report = UsageReport(tools: fiveTools, order: order, cost: nil, advice: [], now: now)
+        let codexReport = report.limited(to: .codex)
+        let list = try tools(codexReport)
+        #expect(list.count == 1)
+        #expect(list[0]["tool"] as? String == "codex")
+        #expect(list[0]["name"] as? String == "Codex")
+
+        let geminiReport = report.limited(to: .gemini)
+        let geminiList = try tools(geminiReport)
+        #expect(geminiList.count == 1)
+        #expect(geminiList[0]["tool"] as? String == "gemini")
+    }
+
+    @Test func probeReportIncludesPaceWhenBehind() throws {
+        let behindWindow = window("session", "Session", used: 0.9, resetsIn: 3600, period: 5 * 3600)
+        let reading = reading(.antigravity, plan: "Pro", [behindWindow])
+        let report = UsageReport(tools: [.antigravity: .ready(reading)], order: [.antigravity], cost: nil, advice: [], now: now)
+        let list = try tools(report)
+        let entry = try entry(list, .antigravity)
+        let windows = try #require(entry["windows"] as? [[String: Any]])
+        #expect(windows[0]["pace"] as? String == "behind")
+        #expect(windows[0]["projectedFraction"] != nil)
+    }
 }
