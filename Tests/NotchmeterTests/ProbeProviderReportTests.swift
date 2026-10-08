@@ -361,4 +361,63 @@ import Testing
         #expect(limitedTools.count == 1)
         #expect(limitedTools[0]["tool"] as? String == "codex")
     }
+
+    @Test func withTimeoutReturnsResultWhenOperationCompletesInTime() async throws {
+        let result = try await Probe.withTimeout(seconds: 1.0) {
+            return 42
+        }
+        #expect(result == 42)
+    }
+
+    @Test func withTimeoutThrowsTimedOutWhenOperationTakesTooLong() async throws {
+        await #expect(throws: Probe.TimeoutError.self) {
+            try await Probe.withTimeout(seconds: 0.05) {
+                try await Task.sleep(nanoseconds: 200_000_000)
+                return "never"
+            }
+        }
+    }
+
+    @Test func probeReportWithNeedsAttentionToolsShowsCorrectProblemAndExitCode() throws {
+        let geminiProblem = "Gemini CLI's login has expired. Run Gemini CLI once so it signs back in"
+        let antigravityProblem = "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in"
+        let copilotProblem = "Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage"
+
+        let statuses: [ToolID: ToolStatus] = [
+            .gemini: .needsAttention(geminiProblem, cached: nil),
+            .antigravity: .needsAttention(antigravityProblem, cached: nil),
+            .copilot: .needsAttention(copilotProblem, cached: nil)
+        ]
+        let order: [ToolID] = [.gemini, .antigravity, .copilot]
+        let report = UsageReport(tools: statuses, order: order, cost: nil, advice: [], now: now)
+
+        let list = try tools(report)
+        let geminiEntry = try entry(list, .gemini)
+        #expect(geminiEntry["status"] as? String == "needsAttention")
+        #expect(geminiEntry["problem"] as? String == geminiProblem)
+
+        let agyEntry = try entry(list, .antigravity)
+        #expect(agyEntry["status"] as? String == "needsAttention")
+        #expect(agyEntry["problem"] as? String == antigravityProblem)
+
+        let copilotEntry = try entry(list, .copilot)
+        #expect(copilotEntry["status"] as? String == "needsAttention")
+        #expect(copilotEntry["problem"] as? String == copilotProblem)
+
+        // When only needsAttention tools exist, exitCode is noData (30)
+        #expect(report.exitCode == .noData)
+    }
+
+    @Test func probeReportWithTimedOutProviderShowsFailedAndExitCode30() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .failed("Probe timed out", cached: nil),
+            .codex: .notInstalled
+        ]
+        let report = UsageReport(tools: statuses, order: [.claude, .codex], cost: nil, advice: [], now: now)
+        let list = try tools(report)
+        let claudeEntry = try entry(list, .claude)
+        #expect(claudeEntry["status"] as? String == "failed")
+        #expect(claudeEntry["problem"] as? String == "Probe timed out")
+        #expect(report.exitCode == .noData)
+    }
 }
