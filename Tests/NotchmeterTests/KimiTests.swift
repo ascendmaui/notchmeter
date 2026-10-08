@@ -156,6 +156,25 @@ import Testing
         #expect(KimiProvider.date("soon") == nil)
         #expect(KimiProvider.date(42) == nil)
     }
+
+    @Test func ratiosAreClampedBetweenZeroAndOne() throws {
+        let json = #"""
+        {"usages":{"limit_5h":{"used_ratio":1.4,"reset_time":"2026-09-30T00:00:00Z"},
+                   "limit_7d":{"used_ratio":-0.2,"reset_time":"2026-09-30T00:00:00Z"}}}
+        """#
+        let reading = try parse(json)
+        #expect(reading.windows[0].usedFraction == 1.0)
+        #expect(reading.windows[1].usedFraction == 0.0)
+    }
+
+    @Test func periodsHandleSecondAndWeekUnitsAndRejectInvalidDurations() {
+        #expect(KimiProvider.period(duration: 45, unit: "TIME_UNIT_SECOND") == 45.0)
+        #expect(KimiProvider.period(duration: 2, unit: "TIME_UNIT_WEEK") == Double(2 * 7 * 86400))
+        #expect(KimiProvider.period(duration: 0, unit: "TIME_UNIT_DAY") == nil)
+        #expect(KimiProvider.period(duration: -5, unit: "TIME_UNIT_HOUR") == nil)
+        #expect(KimiProvider.period(duration: 10, unit: "TIME_UNIT_CENTURY") == nil)
+        #expect(KimiProvider.period(duration: nil, unit: "TIME_UNIT_DAY") == nil)
+    }
 }
 
 /// The login the CLI keeps, read and never refreshed, and where it is kept.
@@ -170,6 +189,15 @@ import Testing
         #expect(unknown.expiresAt == nil, "the CLI writes 0 for an expiry it was never told; that is unknown, not long past")
         #expect(throws: ProviderError.self) { try KimiProvider.parseCredentials(Data(#"{"refresh_token":"only"}"#.utf8)) }
         #expect(throws: ProviderError.self) { try KimiProvider.parseCredentials(Data("not json".utf8)) }
+    }
+
+    @Test func rejectsEmptyAccessTokenInCredentials() {
+        #expect(throws: ProviderError.self) {
+            try KimiProvider.parseCredentials(Data(#"{"access_token":""}"#.utf8))
+        }
+        #expect(throws: ProviderError.self) {
+            try KimiProvider.parseCredentials(Data(#"{"access_token":null}"#.utf8))
+        }
     }
 
     @Test func theShareFolderAndTheBaseFollowTheCLIsOverrides() {

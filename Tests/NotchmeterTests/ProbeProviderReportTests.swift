@@ -420,4 +420,222 @@ import Testing
         #expect(claudeEntry["problem"] as? String == "Probe timed out")
         #expect(report.exitCode == .noData)
     }
+
+    // MARK: - All Eight Tools and Mixed Statuses
+
+    @Test func allEightToolsReportInOrderWithCorrectSchemas() throws {
+        let allEightStatuses: [ToolID: ToolStatus] = [
+            .claude: .ready(reading(.claude, plan: "Max 5x", [
+                window("five_hour", "Session", used: 0.15, resetsIn: 7200, period: 5 * 3600),
+                window("seven_day", "Weekly", used: 0.05, resetsIn: 5 * 86400, period: 7 * 86400)
+            ])),
+            .codex: .ready(reading(.codex, plan: "Plus", [
+                window("five_hour", "Session", used: 0.25, resetsIn: 10800, period: 5 * 3600),
+                window("weekly", "Weekly", used: 0.10, resetsIn: 4 * 86400, period: 7 * 86400)
+            ])),
+            .cursor: .ready(reading(.cursor, plan: "Pro", [
+                window("included", "Included", used: 0.40, resetsIn: 15 * 86400, period: 30 * 86400)
+            ])),
+            .gemini: .ready(reading(.gemini, plan: "Standard", [
+                window("pro", .vendor("Pro"), used: 0.10, resetsIn: 86400, model: "gemini-2.5-pro")
+            ])),
+            .antigravity: .ready(reading(.antigravity, plan: "AI Pro", [
+                window("session", "Session", used: 0.25, resetsIn: 3600, period: 5 * 3600, model: "Gemini 3 Pro")
+            ])),
+            .copilot: .ready(reading(.copilot, plan: "Pro+", [
+                window("premium", "Premium requests", used: 0.30, resetsIn: 20 * 86400, period: 30 * 86400)
+            ])),
+            .kimi: .ready(reading(.kimi, plan: nil, [
+                window("session", "Session", used: 0.50, resetsIn: 1800, period: 5 * 3600),
+                window("weekly", "Weekly", used: 0.10, resetsIn: 4 * 86400, period: 7 * 86400)
+            ])),
+            .opencode: .ready(reading(.opencode, plan: "Go", [
+                window("go_5h", "5-hour", used: 0.05, resetsIn: 14400, period: 5 * 3600),
+                window("go_weekly", "Weekly", used: 0.02, resetsIn: 3 * 86400, period: 7 * 86400)
+            ]))
+        ]
+        let order: [ToolID] = ToolID.allCases
+        let report = UsageReport(tools: allEightStatuses, order: order, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+        #expect(list.count == 8)
+        #expect(list.compactMap { $0["tool"] as? String } == order.map(\.rawValue))
+        #expect(list.allSatisfy { $0["status"] as? String == "ready" })
+        #expect(list.allSatisfy { $0["stale"] as? Bool == false })
+        #expect(report.exitCode == .ok)
+    }
+
+    @Test func mixedStatusesProbeReportSerializesCorrectlyAcrossAllStatusKinds() throws {
+        let cachedAntigravity = reading(.antigravity, plan: "AI Pro", [
+            window("session", "Session", used: 0.85, resetsIn: 3600, period: 5 * 3600, model: "Gemini 3 Pro")
+        ])
+        let cachedCopilot = reading(.copilot, plan: "Pro", [
+            window("premium", "Premium requests", used: 0.20, resetsIn: 86400, period: 30 * 86400)
+        ])
+
+        let mixedStatuses: [ToolID: ToolStatus] = [
+            .codex: .ready(reading(.codex, plan: "Plus", [window("five_hour", "Session", used: 0.30, resetsIn: 3600)])),
+            .antigravity: .needsAttention("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in", cached: cachedAntigravity),
+            .gemini: .needsAttention("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota", cached: nil),
+            .opencode: .idle("No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card"),
+            .claude: .failed("Probe timed out", cached: nil),
+            .cursor: .offline(cached: nil),
+            .kimi: .notInstalled,
+            .copilot: .rateLimited("GitHub Copilot rate limited", cached: cachedCopilot)
+        ]
+
+        let order: [ToolID] = [.codex, .antigravity, .gemini, .opencode, .claude, .cursor, .kimi, .copilot]
+        let report = UsageReport(tools: mixedStatuses, order: order, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+        #expect(list.count == 8)
+
+        // Codex: ready
+        let codexEntry = try entry(list, .codex)
+        #expect(codexEntry["status"] as? String == "ready")
+        #expect(codexEntry["stale"] as? Bool == false)
+        #expect(codexEntry["problem"] is NSNull)
+
+        // Antigravity: needsAttention with stale reading
+        let agyEntry = try entry(list, .antigravity)
+        #expect(agyEntry["status"] as? String == "needsAttention")
+        #expect(agyEntry["stale"] as? Bool == true)
+        #expect(agyEntry["problem"] as? String == "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in")
+        let agyWindows = try #require(agyEntry["windows"] as? [[String: Any]])
+        #expect(agyWindows.count == 1)
+        #expect(JSON.number(agyWindows[0]["usedFraction"]) == 0.85)
+
+        // Gemini: needsAttention cold (no cached reading)
+        let geminiEntry = try entry(list, .gemini)
+        #expect(geminiEntry["status"] as? String == "needsAttention")
+        #expect(geminiEntry["stale"] == nil)
+        #expect(geminiEntry["windows"] == nil)
+        #expect((geminiEntry["problem"] as? String)?.contains("Sign in to Gemini CLI") == true)
+
+        // OpenCode: idle
+        let opencodeEntry = try entry(list, .opencode)
+        #expect(opencodeEntry["status"] as? String == "idle")
+        #expect(opencodeEntry["note"] as? String == "No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card")
+        #expect(opencodeEntry["problem"] is NSNull)
+
+        // Claude: failed
+        let claudeEntry = try entry(list, .claude)
+        #expect(claudeEntry["status"] as? String == "failed")
+        #expect(claudeEntry["problem"] as? String == "Probe timed out")
+
+        // Cursor: offline
+        let cursorEntry = try entry(list, .cursor)
+        #expect(cursorEntry["status"] as? String == "offline")
+        #expect(cursorEntry["problem"] is NSNull)
+
+        // Kimi: notInstalled
+        let kimiEntry = try entry(list, .kimi)
+        #expect(kimiEntry["status"] as? String == "notInstalled")
+        #expect(kimiEntry["problem"] is NSNull)
+
+        // Copilot: rateLimited with stale reading
+        let copilotEntry = try entry(list, .copilot)
+        #expect(copilotEntry["status"] as? String == "rateLimited")
+        #expect(copilotEntry["stale"] as? Bool == true)
+        #expect((copilotEntry["windows"] as? [[String: Any]])?.count == 1)
+
+        // ExitCode: Antigravity has cached window at 0.85, so exit code is nearLimit (10)
+        #expect(report.exitCode == .nearLimit)
+    }
+
+    @Test func staleReadingsPreservedForGeminiAntigravityAndCopilotOnNeedsAttention() throws {
+        // Test Gemini with stale reading
+        let geminiCached = reading(.gemini, plan: "Advanced", [window("gemini-pro", "Gemini Pro", used: 0.65, resetsIn: 3600)])
+        let geminiStatus = ToolStatus(.tokenExpired("Gemini CLI's login has expired. Run Gemini CLI once so it signs back in"), cached: geminiCached)
+
+        // Test Antigravity with stale reading at limitHit
+        let agyCached = reading(.antigravity, plan: "AI Pro", [window("session", "Session", used: 1.0, resetsIn: 1800)])
+        let agyStatus = ToolStatus(.tokenExpired("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in"), cached: agyCached)
+
+        // Test Copilot with stale reading
+        let copilotCached = reading(.copilot, plan: "Business", [window("premium", "Premium", used: 0.30, resetsIn: 86400 * 5)])
+        let copilotStatus = ToolStatus(.notSignedIn("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage"), cached: copilotCached)
+
+        let report = UsageReport(
+            tools: [.gemini: geminiStatus, .antigravity: agyStatus, .copilot: copilotStatus],
+            order: [.gemini, .antigravity, .copilot],
+            cost: nil,
+            advice: [],
+            now: now
+        )
+        let list = try tools(report)
+
+        let gemini = try entry(list, .gemini)
+        #expect(gemini["status"] as? String == "needsAttention")
+        #expect(gemini["stale"] as? Bool == true)
+        #expect(gemini["plan"] as? String == "Advanced")
+        let geminiWindows = try #require(gemini["windows"] as? [[String: Any]])
+        #expect(JSON.number(geminiWindows[0]["usedFraction"]) == 0.65)
+
+        let agy = try entry(list, .antigravity)
+        #expect(agy["status"] as? String == "needsAttention")
+        #expect(agy["stale"] as? Bool == true)
+        #expect(agy["plan"] as? String == "AI Pro")
+        let agyWindows = try #require(agy["windows"] as? [[String: Any]])
+        #expect(JSON.number(agyWindows[0]["usedFraction"]) == 1.0)
+
+        let copilot = try entry(list, .copilot)
+        #expect(copilot["status"] as? String == "needsAttention")
+        #expect(copilot["stale"] as? Bool == true)
+        #expect(copilot["plan"] as? String == "Business")
+        let copilotWindows = try #require(copilot["windows"] as? [[String: Any]])
+        #expect(JSON.number(copilotWindows[0]["usedFraction"]) == 0.30)
+
+        // Because Antigravity's stale reading has a window at 1.0, the exit code is limitHit (11)
+        #expect(report.exitCode == .limitHit)
+    }
+
+    @Test func exitCodeMatrixValidatesAllTransitions() {
+        func eval(_ statuses: [ToolID: ToolStatus]) -> UsageReport.ExitCode {
+            UsageReport(tools: statuses, order: Array(statuses.keys), cost: nil, advice: [], now: now).exitCode
+        }
+
+        // 1. All tools absent or unmetered -> noData (30)
+        #expect(eval([:]) == .noData)
+        #expect(eval([.codex: .notInstalled, .cursor: .offline(cached: nil), .claude: .failed("err", cached: nil)]) == .noData)
+        #expect(eval([.gemini: .idle("not served"), .opencode: .idle("no turns")]) == .noData)
+
+        // 2. All active tools have 0.0 usage -> noSession (20)
+        #expect(eval([.codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.0)]))]) == .noSession)
+        #expect(eval([
+            .codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.0)])),
+            .gemini: .idle("calm"),
+            .copilot: .notInstalled
+        ]) == .noSession)
+
+        // 3. Normal usage < 0.80 -> ok (0)
+        #expect(eval([.codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.50)]))]) == .ok)
+        #expect(eval([
+            .codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.79)])),
+            .cursor: .ready(reading(.cursor, plan: nil, [window("i", "Included", used: 0.10)]))
+        ]) == .ok)
+
+        // 4. Usage >= 0.80 -> nearLimit (10)
+        #expect(eval([.codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.80)]))]) == .nearLimit)
+        #expect(eval([
+            .codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 0.20)])),
+            .antigravity: .ready(reading(.antigravity, plan: nil, [window("s", "Session", used: 0.95)]))
+        ]) == .nearLimit)
+
+        // 5. Usage >= 1.0 -> limitHit (11)
+        #expect(eval([.codex: .ready(reading(.codex, plan: nil, [window("s", "Session", used: 1.0)]))]) == .limitHit)
+        #expect(eval([
+            .antigravity: .ready(reading(.antigravity, plan: nil, [window("s", "Session", used: 0.85)])),
+            .copilot: .ready(reading(.copilot, plan: nil, [window("m", "Monthly", used: 1.05)]))
+        ]) == .limitHit)
+    }
+
+    @Test func withTimeoutPassesUnderlyingErrorThroughWhenNotTimedOut() async {
+        struct CustomError: Error, Equatable {
+            let message: String
+        }
+        await #expect(throws: CustomError(message: "network issue")) {
+            try await Probe.withTimeout(seconds: 1.0) {
+                throw CustomError(message: "network issue")
+            }
+        }
+    }
 }
