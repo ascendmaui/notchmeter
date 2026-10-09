@@ -773,4 +773,10 @@ import Testing
         #expect(runOutObj["earliestAt"] as? String == Oracle.timestamp(now))
         #expect(runOutObj["latestAt"] as? String == Oracle.timestamp(now))
     }
+
+    @Test func probeGatherWithZeroTimeoutTimesOutCleanlyWithoutHanging() async {
+        let report = await Probe.gather(verbose: false, timeout: 0)
+        #expect(report.exitCode == .noData)
+        #expect(report.cost?.providers.isEmpty ?? true)
+    }
 }

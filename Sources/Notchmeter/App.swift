@@ -1978,7 +1978,10 @@ enum Probe {
         let scanner = ClaudeCostScanner()
         let scanBudget = max(1.0, min(5.0, deadline.timeIntervalSinceNow))
         let cost: CostSummary
-        if let scanned = try? await withTimeout(seconds: scanBudget, operation: {
+        if Date() >= deadline {
+            if verbose { emit("Probe deadline exceeded, skipping cost scan") }
+            cost = .empty
+        } else if let scanned = try? await withTimeout(seconds: scanBudget, operation: {
             await scanner.scan(weeklyResetsAt: weekly?.resetsAt, weeklyUsed: weekly?.usedFraction, sessionResetsAt: session?.resetsAt, sessionUsed: session?.usedFraction)
         }) {
             cost = scanned
