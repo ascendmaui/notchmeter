@@ -23,7 +23,7 @@ enum NotchmeterMain {
         }
         // --no-prompt: never raise the Keychain dialog; a locked item reports "needs attention" instead. The
         // command-line tool and the MCP server run headless and never ask either.
-        if arguments.contains("--no-prompt") || arguments.contains("--smoke") || arguments.contains("--render-assets") || arguments.contains("--render-gallery")
+        if arguments.contains("--no-prompt") || arguments.contains("--probe") || arguments.contains("--smoke") || arguments.contains("--render-assets") || arguments.contains("--render-gallery")
             || arguments.contains("--render-dashboard") || arguments.contains("--mcp") || CommandLineTool.isInvokedAsTool(arguments: arguments) {
             Keychain.setPromptsAllowed(false)
         }
@@ -1842,23 +1842,44 @@ enum Probe {
     }
 
     static func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
+        let task = Task {
+            try await operation()
+        }
+        let timeoutTask = Task<T, any Error> {
+            try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
+            task.cancel()
+            throw TimeoutError.timedOut
+        }
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await withThrowingTaskGroup(of: T.self) { group in
+                    group.addTask {
+                        try await task.value
+                    }
+                    group.addTask {
+                        try await timeoutTask.value
+                    }
+                    guard let first = try await group.next() else {
+                        throw TimeoutError.timedOut
+                    }
+                    group.cancelAll()
+                    return first
+                }
+                timeoutTask.cancel()
+                return result
+            } catch {
+                task.cancel()
+                timeoutTask.cancel()
+                throw error
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
-                throw TimeoutError.timedOut
-            }
-            guard let result = try await group.next() else {
-                throw TimeoutError.timedOut
-            }
-            group.cancelAll()
-            return result
+        } onCancel: {
+            task.cancel()
+            timeoutTask.cancel()
         }
     }
 
     static func run(json: Bool = false, history: Bool = false) {
+        Keychain.setPromptsAllowed(false)
         if !json { emit("\(AppInfo.name) probe: reads usage from tools signed in on this Mac; tokens are never printed.") }
         let runTimeout = timeout + 5
         DispatchQueue.main.asyncAfter(deadline: .now() + runTimeout) {
@@ -1888,6 +1909,7 @@ enum Probe {
 
     /// One read per signed-in tool, the transcript scan, the drain log and the advice, as a report.
     static func gather(verbose: Bool = false, history: Bool = false, timeout: TimeInterval = timeout) async -> UsageReport {
+        Keychain.setPromptsAllowed(false)
         var readings: [UsageReading] = []
         var statuses: [ToolID: ToolStatus] = [:]
         let defaults = UserDefaults.standard
@@ -1923,7 +1945,11 @@ enum Probe {
                 statuses[provider.tool] = ToolStatus(error, cached: nil)
                 if verbose { emit("\(name): \(error.message)") }
             } catch {
-                statuses[provider.tool] = .failed(error.localizedDescription, cached: nil)
+                if let offline = ProviderError.offline(from: error) {
+                    statuses[provider.tool] = ToolStatus(offline, cached: nil)
+                } else {
+                    statuses[provider.tool] = .failed(error.localizedDescription, cached: nil)
+                }
                 if verbose { emit("\(name): \(error.localizedDescription)") }
             }
         }
@@ -1939,7 +1965,7 @@ enum Probe {
         }) {
             cost = scanned
         } else {
-            cost = await scanner.scan(weeklyResetsAt: weekly?.resetsAt, weeklyUsed: weekly?.usedFraction, sessionResetsAt: session?.resetsAt, sessionUsed: session?.usedFraction)
+            cost = .empty
         }
         let now = Date()
         let samples = DrainLog().load(now: now)

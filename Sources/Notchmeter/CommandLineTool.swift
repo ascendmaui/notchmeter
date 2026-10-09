@@ -57,7 +57,7 @@ enum CommandLineTool {
             exit(0)
         }
         let json = arguments.contains("--json")
-        let force = arguments.contains("--force")
+        let force = arguments.contains("--force") || arguments.contains("--probe")
         let tool = tool(in: arguments)
         if let (data, source) = cachedReport(force: force) {
             let report = Self.parsed(data, tool: tool)
