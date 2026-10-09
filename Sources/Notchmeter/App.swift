@@ -1841,35 +1841,53 @@ enum Probe {
         case timedOut
     }
 
+    private enum TimeoutGroupResult<R: Sendable>: Sendable {
+        case success(R)
+        case timedOut
+        case error(any Error)
+    }
+
     static func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
         let task = Task {
             try await operation()
         }
-        let timeoutTask = Task<T, any Error> {
+        let timeoutTask = Task {
             try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
-            task.cancel()
-            throw TimeoutError.timedOut
         }
         return try await withTaskCancellationHandler {
-            do {
-                let result = try await withThrowingTaskGroup(of: T.self) { group in
-                    group.addTask {
-                        try await task.value
+            let outcome: TimeoutGroupResult<T> = await withTaskGroup(of: TimeoutGroupResult<T>.self) { group -> TimeoutGroupResult<T> in
+                group.addTask {
+                    do {
+                        return .success(try await task.value)
+                    } catch {
+                        return .error(error)
                     }
-                    group.addTask {
-                        try await timeoutTask.value
-                    }
-                    guard let first = try await group.next() else {
-                        throw TimeoutError.timedOut
-                    }
-                    group.cancelAll()
-                    return first
                 }
-                timeoutTask.cancel()
+                group.addTask {
+                    do {
+                        try await timeoutTask.value
+                        return .timedOut
+                    } catch {
+                        return .error(error)
+                    }
+                }
+                guard let first = await group.next() else {
+                    return TimeoutGroupResult<T>.timedOut
+                }
+                group.cancelAll()
+                return first
+            }
+            task.cancel()
+            timeoutTask.cancel()
+            switch outcome {
+            case .success(let result):
                 return result
-            } catch {
-                task.cancel()
-                timeoutTask.cancel()
+            case .timedOut:
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw TimeoutError.timedOut
+            case .error(let error):
                 throw error
             }
         } onCancel: {
