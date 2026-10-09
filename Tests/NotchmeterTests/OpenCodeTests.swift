@@ -837,5 +837,30 @@ private func utc(_ text: String) -> Date { DateParsing.iso8601(text)! }
         #expect(!reading.windows.isEmpty)
         #expect(reading.windows.first?.id == "go_5h")
     }
+
+    @Test func fetchThrowsUnavailableWhenDatabaseProblemExists() async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("opencode-corrupt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let dbURL = temp.appendingPathComponent("opencode.db")
+        try "corrupted not a valid sqlite database".write(to: dbURL, atomically: true, encoding: .utf8)
+
+        let provider = OpenCodeProvider(reader: OpenCodeUsageReader(data: temp, environment: [:]))
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected unavailable or nothingYet on database problem")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            switch error {
+            case .unavailable(let prob):
+                #expect(!prob.isEmpty)
+            case .nothingYet:
+                break
+            default:
+                Issue.record("Expected .unavailable or .nothingYet, got \(error)")
+            }
+        }
+    }
 }
 

@@ -638,4 +638,45 @@ import Testing
             }
         }
     }
+
+    @Test func probeReportWithOfflineProviderShowsOfflineAndExitCode30() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .offline(cached: nil),
+            .kimi: .offline(cached: nil)
+        ]
+        let report = UsageReport(tools: statuses, cost: nil, advice: [], now: Date())
+        let json = try JSONSerialization.jsonObject(with: report.json) as? [String: Any]
+        let tools = try #require(json?["tools"] as? [[String: Any]])
+        #expect(tools.count == 2)
+        for tool in tools {
+            #expect(tool["status"] as? String == "offline")
+        }
+        #expect(report.exitCode == .noData)
+    }
+
+    @Test func probeReportIncludesAllEightToolsWithStatusFields() throws {
+        let allTools: [ToolID: ToolStatus] = [
+            .claude: .ready(reading(.claude, plan: "Pro", [window("s", "Session", used: 0.1)])),
+            .codex: .ready(reading(.codex, plan: "Plus", [window("w", "Weekly", used: 0.2)])),
+            .cursor: .ready(reading(.cursor, plan: "Pro", [window("i", "Included", used: 0.3)])),
+            .gemini: .idle("Personal account"),
+            .antigravity: .ready(reading(.antigravity, plan: "Standard", [window("s", "Session", used: 0.4)])),
+            .copilot: .ready(reading(.copilot, plan: "Individual", [window("m", "Monthly", used: 0.5)])),
+            .kimi: .ready(reading(.kimi, plan: nil, [window("s", "Session", used: 0.6)])),
+            .opencode: .idle("No Go turns")
+        ]
+        let report = UsageReport(tools: allTools, cost: nil, advice: [], now: Date())
+        let json = try JSONSerialization.jsonObject(with: report.json) as? [String: Any]
+        let tools = try #require(json?["tools"] as? [[String: Any]])
+        #expect(tools.count == 8)
+
+        let toolIDs = Set(tools.compactMap { $0["tool"] as? String })
+        #expect(toolIDs == Set(ToolID.allCases.map(\.rawValue)))
+
+        for entry in tools {
+            let id = try #require((entry["tool"] as? String).flatMap(ToolID.init(rawValue:)))
+            #expect(entry["name"] as? String == id.displayName)
+            #expect(entry["status"] as? String != nil)
+        }
+    }
 }
