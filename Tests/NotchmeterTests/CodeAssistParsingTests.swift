@@ -768,6 +768,91 @@ import Testing
         #expect(CodeAssistProvider.loggedHost(inText: "nothing here") == nil)
         #expect(CodeAssistProvider.loggedHost(inText: "https://evil-host.com/v1internal") == nil)
     }
+
+    @Test func summaryQuotaCallRefusal401ThrowsNotSignedInNeedsAttention() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let licensed = json(["currentTier": ["id": "standard-tier"]])
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": return (200, licensed)
+            case "/v1internal:retrieveUserQuotaSummary": return (401, Data())
+            default: return (500, Data())
+            }
+        }
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notSignedIn on 401 retrieveUserQuotaSummary")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(error == .notSignedIn(L("Gemini CLI's login was refused. Run Gemini CLI once so it signs back in")))
+        }
+    }
+
+    @Test func projectRetryRefusalRespectsProjectlessRetryStatus() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let licensedWithProject = json(["currentTier": ["id": "standard-tier"], "cloudaicompanionProject": "proj-xyz"])
+        let subscriptionRefusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "details": [["reason": "SUBSCRIPTION_REQUIRED"]]]])
+
+        // First project call gets 403 license error; retry without project returns 403 with SUBSCRIPTION_REQUIRED
+        var callCount = 0
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": return (200, licensedWithProject)
+            case "/v1internal:retrieveUserQuotaSummary": return (404, Data())
+            case "/v1internal:retrieveUserQuota":
+                callCount += 1
+                if callCount == 1 {
+                    return (403, Data(#"{"error":{"message":"project license missing"}}"#.utf8))
+                } else {
+                    return (403, subscriptionRefusal)
+                }
+            default: return (404, Data())
+            }
+        }
+        #expect(await failure(of: provider) == .notServed)
+    }
+
+    @Test func needsAttentionErrorTakesPrecedenceOverShutdownNotServed() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        // Daily host returns 401 unauthorized (needsAttention); production host returns shutdown unsupported
+        let unsupported = json(["ineligibleTiers": [["reasonCode": "UNSUPPORTED_CLIENT", "tierId": "free-tier"]]])
+        exchange.answer = { url in
+            if url.host == CodeAssistProvider.dailyHost {
+                return (401, Data())
+            } else {
+                return (200, unsupported)
+            }
+        }
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notSignedIn when daily host returns 401")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(error == .notSignedIn(L("Gemini CLI's login was refused. Run Gemini CLI once so it signs back in")))
+        }
+    }
+
+    @Test func parseCredentialsWithAntigravityToolProducesAntigravityMessage() {
+        let invalidJSON = Data("not json".utf8)
+        let emptyTokenJSON = Data(#"{"token":{"access_token":""}}"#.utf8)
+
+        // Gemini tool
+        #expect(throws: ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))) {
+            try CodeAssistProvider.parseCredentials(invalidJSON, tool: .gemini)
+        }
+        #expect(throws: ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))) {
+            try CodeAssistProvider.parseCredentials(emptyTokenJSON, tool: .gemini)
+        }
+
+        // Antigravity tool
+        let agyExpected = L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
+        #expect(throws: ProviderError.notSignedIn(agyExpected)) {
+            try CodeAssistProvider.parseCredentials(invalidJSON, tool: .antigravity)
+        }
+        #expect(throws: ProviderError.notSignedIn(agyExpected)) {
+            try CodeAssistProvider.parseCredentials(emptyTokenJSON, tool: .antigravity)
+        }
+    }
 }
 
 /// Which ProviderError a fetch ends in, by case; nil when it succeeds or fails some other way.

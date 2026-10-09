@@ -170,11 +170,11 @@ actor CodeAssistProvider: UsageProvider {
                 ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
                 : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota"))
         }
-        var credentials = try Self.parseCredentials(data)
+        var credentials = try Self.parseCredentials(data, tool: tool)
         if let expiresAt = credentials.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
             if tool == .antigravity,
                let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")),
-               let agyCreds = try? Self.parseCredentials(agyData),
+               let agyCreds = try? Self.parseCredentials(agyData, tool: tool),
                (agyCreds.expiresAt == nil || (agyCreds.expiresAt?.timeIntervalSinceNow ?? 0) >= 30) {
                 credentials = agyCreds
             } else {
@@ -208,6 +208,7 @@ actor CodeAssistProvider: UsageProvider {
             }
         }
         if let unmetered { return unmetered }
+        if let lastError, lastError.needsAttention { throw lastError }
         if shutdown { throw ProviderError.notServed(Self.shutdownMessage) }
         if let lastError { throw lastError }
         if let transportError { throw transportError }
@@ -218,27 +219,35 @@ actor CodeAssistProvider: UsageProvider {
     /// refusal retried project-less before it is taken as a refusal. The retry keeps the first refusal's body for
     /// the shutdown diagnosis, which reads the `SUBSCRIPTION_REQUIRED` reason out of it.
     private func quota(host: String, token: String, account: Account, antigravity: Bool, now: Date) async throws -> UsageReading {
-        if let (summary, summaryResponse) = try? await post(Self.url(host: host, method: "retrieveUserQuotaSummary"), token: token, body: [:], antigravity: antigravity),
-           summaryResponse?.statusCode == 200, let reading = try? Self.parseQuotaSummary(summary, plan: account.plan, tool: tool, now: now) {
-            return reading
+        if let (summary, summaryResponse) = try? await post(Self.url(host: host, method: "retrieveUserQuotaSummary"), token: token, body: [:], antigravity: antigravity) {
+            if summaryResponse?.statusCode == 200, let reading = try? Self.parseQuotaSummary(summary, plan: account.plan, tool: tool, now: now) {
+                return reading
+            }
+            if summaryResponse?.statusCode == 401 {
+                throw ProviderError.notSignedIn(refusedMessage)
+            }
         }
         let quotaURL = Self.url(host: host, method: "retrieveUserQuota")
         let body: [String: Any] = account.project.map { ["project": $0] } ?? [:]
         let (quota, response) = try await post(quotaURL, token: token, body: body, antigravity: antigravity)
+        var finalQuota = quota
+        var finalResponse = response
         if response?.statusCode == 403, account.project != nil {
             let (retry, retryResponse) = try await post(quotaURL, token: token, body: [:], antigravity: antigravity)
             if retryResponse?.statusCode == 200 { return try Self.parseQuota(retry, plan: account.plan, tool: tool, now: now) }
+            finalQuota = retry
+            finalResponse = retryResponse
         }
-        switch response?.statusCode ?? 0 {
+        switch finalResponse?.statusCode ?? 0 {
         case 200:
-            return try Self.parseQuota(quota, plan: account.plan, tool: tool, now: now)
+            return try Self.parseQuota(finalQuota, plan: account.plan, tool: tool, now: now)
         case 401:
             throw ProviderError.notSignedIn(refusedMessage)
         case 403:
-            guard Self.isSubscriptionRequired(quota) else { throw ProviderError.accessDenied(L("Google refused the quota read for this account")) }
+            guard Self.isSubscriptionRequired(finalQuota) else { throw ProviderError.accessDenied(L("Google refused the quota read for this account")) }
             throw ProviderError.notServed(Self.shutdownMessage)
         case 429:
-            throw ProviderError.rateLimited(retryAfter: RetryAfter.seconds(from: response))
+            throw ProviderError.rateLimited(retryAfter: RetryAfter.seconds(from: finalResponse))
         case let status:
             throw ProviderError.http(status, L("Google's quota endpoint answered"))
         }
@@ -287,16 +296,19 @@ actor CodeAssistProvider: UsageProvider {
 
     // MARK: - Parsing
 
-    static func parseCredentials(_ data: Data) throws -> CodeAssistCredentials {
+    static func parseCredentials(_ data: Data, tool: ToolID = .gemini) throws -> CodeAssistCredentials {
+        let notSignedInMessage = tool == .antigravity
+            ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
+            : L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google")
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
+            throw ProviderError.notSignedIn(notSignedInMessage)
         }
         let nestedToken = root["token"] as? [String: Any]
         let token: String? = (nestedToken?["access_token"] as? String)
             ?? (root["access_token"] as? String)
             ?? (root["token"] as? String)
         guard let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
-            throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
+            throw ProviderError.notSignedIn(notSignedInMessage)
         }
         let rawExpiry = nestedToken?["expiry"] ?? nestedToken?["expiry_date"] ?? nestedToken?["expires_at"]
             ?? root["expiry_date"] ?? root["expiry"] ?? root["expires_at"]

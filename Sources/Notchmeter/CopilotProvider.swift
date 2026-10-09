@@ -72,6 +72,7 @@ actor CopilotProvider: UsageProvider {
             candidates.insert(candidates.remove(at: index), at: 0)
         }
         var refused: [URL] = []
+        var noSubCount = 0
         for candidate in candidates {
             let (data, response) = try await get(Self.userURL, token: candidate.token, copilotHeaders: true)
             switch response?.statusCode ?? 0 {
@@ -87,7 +88,8 @@ actor CopilotProvider: UsageProvider {
                 refused.append(candidate.file)
                 continue
             case 404:
-                throw ProviderError.unavailable(L("This GitHub account has no Copilot subscription"))
+                noSubCount += 1
+                continue
             case 429:
                 throw ProviderError.rateLimited(retryAfter: RetryAfter.seconds(from: response))
             case let code:
@@ -95,8 +97,14 @@ actor CopilotProvider: UsageProvider {
             }
         }
         working = nil
-        let files = refused.map { Self.shortPath($0) }.joined(separator: ", ")
-        throw ProviderError.notSignedIn(L("GitHub Copilot's login was refused (the token in %@). Sign in again in your editor or run `gh auth login`", files))
+        if !refused.isEmpty {
+            let files = refused.map { Self.shortPath($0) }.joined(separator: ", ")
+            throw ProviderError.notSignedIn(L("GitHub Copilot's login was refused (the token in %@). Sign in again in your editor or run `gh auth login`", files))
+        }
+        if noSubCount > 0 {
+            throw ProviderError.unavailable(L("This GitHub account has no Copilot subscription"))
+        }
+        throw ProviderError.notSignedIn(L("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage"))
     }
 
     private func get(_ url: URL, token: String, copilotHeaders: Bool) async throws -> (Data, HTTPURLResponse?) {

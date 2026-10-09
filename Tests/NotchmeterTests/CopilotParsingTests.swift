@@ -693,4 +693,76 @@ import Testing
         #expect(foundCandidates[0].token == "gho_keychain_secret")
         #expect(foundCandidates[0].file == gh)
     }
+
+    @Test func fetchContinuesToNextCandidateWhenFirstCandidateReturns404() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-multi-404-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // Two candidates in hosts.json and apps.json
+        try Data(#"{"github.com":{"oauth_token":"gho_candidate1"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        try Data(#"{"github.com":{"oauth_token":"gho_candidate2"}}"#.utf8).write(to: config.appendingPathComponent("apps.json"))
+
+        let validBody = #"{"copilot_plan":"individual","quota_snapshots":{"premium_interactions":{"entitlement":50,"remaining":30}}}"#
+        let answers = Answers()
+        answers.status = { token, url in
+            if token.contains("gho_candidate1") {
+                return (404, Data())
+            } else if token.contains("gho_candidate2") {
+                return (200, Data(validBody.utf8))
+            }
+            return (500, Data())
+        }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        let reading = try await provider.fetch()
+        #expect(reading.tool == .copilot)
+        #expect(reading.windows.count == 1)
+        #expect(reading.windows[0].usedFraction == 0.4)
+    }
+
+    @Test func fetchPrioritizesNotSignedInWhenCandidatesAreRefusedAnd404() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-refused-404-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"gho_refused"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        try Data(#"{"github.com":{"oauth_token":"gho_nosub"}}"#.utf8).write(to: config.appendingPathComponent("apps.json"))
+
+        let answers = Answers()
+        answers.status = { token, url in
+            if token.contains("gho_refused") {
+                return (401, Data())
+            } else if token.contains("gho_nosub") {
+                return (404, Data())
+            }
+            return (500, Data())
+        }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notSignedIn when one candidate is refused")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .notSignedIn(let msg):
+                #expect(msg.contains("hosts.json"))
+            default:
+                Issue.record("Expected .notSignedIn, got \(error)")
+            }
+        }
+    }
 }
