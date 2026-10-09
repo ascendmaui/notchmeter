@@ -182,6 +182,23 @@ import Testing
         }
     }
 
+    @Test func fetchThrowsOfflineOnURLErrorHostOrTimeout() async throws {
+        let dir = try makeDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        for code in [URLError.Code.timedOut, URLError.Code.cannotFindHost, URLError.Code.networkConnectionLost] {
+            let s = session { _ in .failure(URLError(code)) }
+            let provider = ClaudeProvider(session: s, configDir: dir)
+            do {
+                _ = try await provider.fetch()
+                Issue.record("expected offline error for \(code)")
+            } catch let error as ProviderError {
+                #expect(!error.needsAttention)
+                #expect(error == .offline(L("Offline, retrying")))
+            }
+        }
+    }
+
     @Test func fetchThrowsTokenExpiredWhenExpiryIsInPast() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-claude-expired-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -328,6 +345,20 @@ import Testing
         try #"{"oauthAccount":{"accountUuid":"acc_1"}}"#.write(to: claudeJSON, atomically: true, encoding: .utf8)
         #expect(ClaudeProvider.authMode(environment: [:], configDir: dir, claudeJSON: claudeJSON) == .oauth)
     }
+
+    @Test func defaultConfigDirRespectsCustomDirAndTildeExpansion() {
+        let customURL = ClaudeProvider.defaultConfigDir(environment: ["CLAUDE_CONFIG_DIR": "/custom/path/to/claude"])
+        #expect(customURL.path == "/custom/path/to/claude")
+
+        let tildeURL = ClaudeProvider.defaultConfigDir(environment: ["CLAUDE_CONFIG_DIR": "~/custom_claude"])
+        #expect(tildeURL.path == Paths.home.appendingPathComponent("custom_claude").path)
+
+        let emptyURL = ClaudeProvider.defaultConfigDir(environment: ["CLAUDE_CONFIG_DIR": ""])
+        #expect(emptyURL.path == Paths.home.appendingPathComponent(".claude").path)
+
+        let defaultURL = ClaudeProvider.defaultConfigDir(environment: [:])
+        #expect(defaultURL.path == Paths.home.appendingPathComponent(".claude").path)
+    }
 }
 
 /// Extra usage credits and scoped weekly limits edge cases.
@@ -384,5 +415,19 @@ import Testing
         #expect(windows[0].usedFraction == 0.3)
         #expect(windows[0].periodDuration == Period.week)
         #expect(windows[0].resetsAt == DateParsing.iso8601("2026-10-15T00:00:00Z"))
+    }
+
+    @Test func rateLimitWindowsClampsUtilizationAndIgnoresMalformed() {
+        let windows = ClaudeProvider.rateLimitWindows { header in
+            switch header {
+            case "anthropic-ratelimit-unified-5h-utilization": return "1.5"
+            case "anthropic-ratelimit-unified-5h-reset": return "1786518600"
+            case "anthropic-ratelimit-unified-7d-utilization": return "invalid-number"
+            default: return nil
+            }
+        }
+        #expect(windows.count == 1)
+        #expect(windows[0].id == "five_hour")
+        #expect(windows[0].usedFraction == 1.0)
     }
 }

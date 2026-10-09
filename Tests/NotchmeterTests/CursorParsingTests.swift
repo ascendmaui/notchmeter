@@ -544,12 +544,25 @@ private extension Data {
 
     final class StubProtocol: URLProtocol {
         nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data))?
+        nonisolated(unsafe) static var customHandler: (@Sendable (URLRequest) -> Result<(status: Int, headers: [String: String], body: Data), URLError>)?
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
         override func stopLoading() {}
 
         override func startLoading() {
+            if let custom = Self.customHandler {
+                switch custom(request) {
+                case .success(let res):
+                    let response = HTTPURLResponse(url: request.url!, statusCode: res.status, httpVersion: nil, headerFields: res.headers)!
+                    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                    client?.urlProtocol(self, didLoad: res.body)
+                    client?.urlProtocolDidFinishLoading(self)
+                case .failure(let error):
+                    client?.urlProtocol(self, didFailWithError: error)
+                }
+                return
+            }
             guard let handler = Self.handler else {
                 client?.urlProtocol(self, didFailWithError: URLError(.badURL))
                 return
@@ -564,6 +577,15 @@ private extension Data {
 
     func session(handler: @escaping @Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data)) -> URLSession {
         StubProtocol.handler = handler
+        StubProtocol.customHandler = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func session(customHandler: @escaping @Sendable (URLRequest) -> Result<(status: Int, headers: [String: String], body: Data), URLError>) -> URLSession {
+        StubProtocol.handler = nil
+        StubProtocol.customHandler = customHandler
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
         return URLSession(configuration: config)
@@ -746,5 +768,61 @@ private extension Data {
         #expect(grokBot.usedFraction == 0.5)
         let included = try #require(reading.windows.first { $0.id == "included" })
         #expect(included.usedFraction == 0.35)
+    }
+
+    @Test func fetchThrowsNotSignedInWhenDatabaseFileDoesNotExist() async throws {
+        let missingDB = FileManager.default.temporaryDirectory.appendingPathComponent("nonexistent-\(UUID().uuidString).vscdb")
+        let s = session { _ in (200, [:], Data()) }
+        let provider = CursorProvider(session: s, stateDatabase: missingDB, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected not signed in error when database file does not exist")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(error == .notSignedIn(L("Sign in to Cursor in the editor to read your usage")))
+        }
+    }
+
+    @Test func fetchMapsURLErrorToOffline() async throws {
+        let (dir, db) = try makeDatabase(token: validToken())
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let s = session { _ in .failure(URLError(.notConnectedToInternet)) }
+        let provider = CursorProvider(session: s, stateDatabase: db, readUsageEvents: { false }, history: nil)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("expected offline error on URLError")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            switch error {
+            case .offline: break
+            default: Issue.record("expected .offline, got \(error)")
+            }
+        }
+    }
+
+    @Test func withStateCopyThrowsUnavailableWhenDatabaseFileDoesNotExist() throws {
+        let missingDB = FileManager.default.temporaryDirectory.appendingPathComponent("nonexistent-\(UUID().uuidString).vscdb")
+        #expect(throws: ProviderError.unavailable(L("Cursor's state database not found"))) {
+            try CursorProvider.withStateCopy(of: missingDB) { _ in }
+        }
+    }
+
+    @Test func withStateCopyThrowsUnavailableWhenDatabaseIsCorrupt() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-cursor-corrupt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let corruptDB = dir.appendingPathComponent("state.vscdb")
+        try "corrupted not a valid sqlite database".write(to: corruptDB, atomically: true, encoding: .utf8)
+
+        #expect(throws: ProviderError.self) {
+            try CursorProvider.withStateCopy(of: corruptDB) { db in
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT value FROM ItemTable", -1, &statement, nil) == SQLITE_OK else {
+                    throw ProviderError.unavailable(L("Cursor's state database could not be queried"))
+                }
+            }
+        }
     }
 }

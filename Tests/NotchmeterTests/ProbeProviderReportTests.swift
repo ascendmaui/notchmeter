@@ -679,4 +679,98 @@ import Testing
             #expect(entry["status"] as? String != nil)
         }
     }
+
+    @Test func probeReportIncludesHistoryRecordsSortedOldestFirst() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let day1 = DateParsing.iso8601("2026-10-06T00:00:00Z")!
+        let day2 = DateParsing.iso8601("2026-10-07T00:00:00Z")!
+
+        let record1 = CostHistory.Record(
+            cost: 1.25,
+            tokens: TokenBreakdown(input: 1000, cacheWrite5m: 50, cacheWrite1h: 0, cacheRead: 500, output: 200),
+            byModel: ["claude-3-5-sonnet": 1.25],
+            byProject: ["notchmeter": 1.25],
+            sessionTokensPerPercent: 250.0
+        )
+        let record2 = CostHistory.Record(
+            cost: 3.50,
+            tokens: TokenBreakdown(input: 2000, cacheWrite5m: 100, cacheWrite1h: 50, cacheRead: 1000, output: 400),
+            byModel: ["claude-3-7-sonnet": 3.50],
+            byProject: ["notchmeter": 3.50],
+            sessionTokensPerPercent: 300.0
+        )
+
+        let history: [Date: CostHistory.Record] = [
+            day2: record2,
+            day1: record1
+        ]
+
+        let report = UsageReport(tools: fiveTools, order: [.claude], cost: nil, advice: [], history: history, now: now)
+        let json = try #require(try JSONSerialization.jsonObject(with: report.json) as? [String: Any])
+        let rows = try #require(json["history"] as? [[String: Any]])
+        #expect(rows.count == 2)
+
+        #expect(rows[0]["day"] as? String == CostHistory.key(day1, calendar: calendar))
+        #expect(rows[0]["cost"] as? Double == 1.25)
+        #expect(rows[0]["tokens"] as? Int == record1.tokens.total)
+        #expect(rows[0]["topModel"] as? String == "claude-3-5-sonnet")
+        #expect(rows[0]["sessionTokensPerPercent"] as? Int == 250)
+
+        let buckets1 = try #require(rows[0]["tokenBuckets"] as? [String: Any])
+        #expect(buckets1["input"] as? Int == 1000)
+        #expect(buckets1["output"] as? Int == 200)
+        #expect(buckets1["cacheRead"] as? Int == 500)
+
+        #expect(rows[1]["day"] as? String == CostHistory.key(day2, calendar: calendar))
+        #expect(rows[1]["cost"] as? Double == 3.50)
+        #expect(rows[1]["topModel"] as? String == "claude-3-7-sonnet")
+
+        let claudeReport = report.limited(to: .claude)
+        let claudeJson = try #require(try JSONSerialization.jsonObject(with: claudeReport.json) as? [String: Any])
+        #expect(claudeJson["history"] != nil)
+
+        let codexReport = report.limited(to: .codex)
+        let codexJson = try #require(try JSONSerialization.jsonObject(with: codexReport.json) as? [String: Any])
+        #expect(codexJson["history"] == nil)
+    }
+
+    @Test func probeReportPromptCacheHandlesNilMissShareAndFormatting() throws {
+        let promptCache = PromptCacheSummary(
+            misses: 0,
+            requests: 0,
+            rewrittenTokens: 0,
+            rewrittenUSD: nil,
+            lastCause: nil,
+            sessions: 0
+        )
+        let report = UsageReport(tools: fiveTools, order: [.claude], cost: nil, advice: [], promptCache: promptCache, now: now)
+        let json = try #require(try JSONSerialization.jsonObject(with: report.json) as? [String: Any])
+        let cacheObj = try #require(json["promptCache"] as? [String: Any])
+        #expect(cacheObj["misses"] as? Int == 0)
+        #expect(cacheObj["requests"] as? Int == 0)
+        #expect(cacheObj["missShare"] is NSNull)
+        #expect(cacheObj["rewrittenUSD"] is NSNull)
+        #expect(cacheObj["lastCause"] is NSNull)
+    }
+
+    @Test func probeReportRunOutHandlesZeroSamplesAndNilExtremes() throws {
+        let key = DrainLog.Key(tool: .cursor, window: "included")
+        let runOut = RunOutInterval(earliest: 0, latest: 0, sampleCount: 0)
+        let report = UsageReport(
+            tools: fiveTools,
+            order: [.cursor],
+            cost: nil,
+            advice: [],
+            runOuts: [key: runOut],
+            now: now
+        )
+        let list = try tools(report)
+        let cursor = try entry(list, .cursor)
+        let windows = try #require(cursor["windows"] as? [[String: Any]])
+        let included = try #require(windows.first { $0["id"] as? String == "included" })
+        let runOutObj = try #require(included["runOut"] as? [String: Any])
+        #expect(runOutObj["samples"] as? Int == 0)
+        #expect(runOutObj["earliestAt"] as? String == Oracle.timestamp(now))
+        #expect(runOutObj["latestAt"] as? String == Oracle.timestamp(now))
+    }
 }
