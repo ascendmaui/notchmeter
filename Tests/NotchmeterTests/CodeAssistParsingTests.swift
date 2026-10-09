@@ -853,6 +853,77 @@ import Testing
             try CodeAssistProvider.parseCredentials(emptyTokenJSON, tool: .antigravity)
         }
     }
+
+    @Test func antigravityFallsBackToAntigravityOAuthTokenWhenOAuthCredsCorrupt() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-corrupt-\(UUID().uuidString)")
+        let geminiHome = dir.appendingPathComponent(".gemini")
+        let agyHome = geminiHome.appendingPathComponent("antigravity-cli")
+        try FileManager.default.createDirectory(at: agyHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Write corrupt oauth_creds.json in .gemini
+        try Data("{\"invalid_json\":".utf8).write(to: geminiHome.appendingPathComponent("oauth_creds.json"))
+
+        // Write valid antigravity-oauth-token
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        let tokenJSON = #"{"token":{"access_token":"ya29.from-agy-fallback","expiry_date":\#(expiry)}}"#
+        try Data(tokenJSON.utf8).write(to: agyHome.appendingPathComponent("antigravity-oauth-token"))
+
+        let quota = json(["buckets": [["modelId": "gemini-2.5-pro", "remainingFraction": 0.8, "resetTime": "2026-09-02T07:00:00Z"]]])
+        let account = json(["currentTier": ["id": "standard-tier"], "cloudaicompanionProject": "p-corrupt"])
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, account)
+            case "/v1internal:retrieveUserQuota": (200, quota)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: geminiHome,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        let reading = try await antigravityProvider.fetch()
+        #expect(reading.tool == .antigravity)
+        #expect(abs((reading.windows[0].usedFraction ?? 0) - 0.2) < 1e-9)
+        #expect(exchange.seen.first?.request.value(forHTTPHeaderField: "Authorization") == "Bearer ya29.from-agy-fallback")
+    }
+
+    @Test func quotaSummarySubscriptionRequiredThrowsNotServedShutdown() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-subreq-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let account = json(["currentTier": ["id": "standard-tier"]])
+        let subReqError = json([
+            "error": [
+                "code": 403,
+                "message": "Subscription required",
+                "details": [
+                    ["@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SUBSCRIPTION_REQUIRED"]
+                ]
+            ]
+        ])
+
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, account)
+            case "/v1internal:retrieveUserQuotaSummary": (403, subReqError)
+            default: (404, Data())
+            }
+        }
+
+        let geminiProvider = CodeAssistProvider(tool: .gemini, session: session, geminiHome: dir,
+                                                applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        do {
+            _ = try await geminiProvider.fetch()
+            Issue.record("Expected notServed when retrieveUserQuotaSummary returns 403 SUBSCRIPTION_REQUIRED")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            #expect(error == .notServed(CodeAssistProvider.shutdownMessage))
+        }
+    }
 }
 
 /// Which ProviderError a fetch ends in, by case; nil when it succeeds or fails some other way.

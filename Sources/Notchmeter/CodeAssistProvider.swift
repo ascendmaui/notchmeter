@@ -160,23 +160,26 @@ actor CodeAssistProvider: UsageProvider {
     }
 
     func fetch() async throws -> UsageReading {
-        let data: Data
+        var credentials: CodeAssistCredentials?
         if let direct = try? Data(contentsOf: credentialsFile) {
-            data = direct
-        } else if tool == .antigravity, let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")) {
-            data = agyData
-        } else {
-            throw ProviderError.notSignedIn(tool == .antigravity
-                ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
-                : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota"))
+            credentials = try? Self.parseCredentials(direct, tool: tool)
         }
-        var credentials = try Self.parseCredentials(data, tool: tool)
-        if let expiresAt = credentials.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
+        if credentials == nil, tool == .antigravity,
+           let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")) {
+            credentials = try? Self.parseCredentials(agyData, tool: tool)
+        }
+        guard var activeCredentials = credentials else {
+            let notSignedInMessage = tool == .antigravity
+                ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
+                : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota")
+            throw ProviderError.notSignedIn(notSignedInMessage)
+        }
+        if let expiresAt = activeCredentials.expiresAt, expiresAt.timeIntervalSinceNow < 30 {
             if tool == .antigravity,
                let agyData = try? Data(contentsOf: antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")),
                let agyCreds = try? Self.parseCredentials(agyData, tool: tool),
                (agyCreds.expiresAt == nil || (agyCreds.expiresAt?.timeIntervalSinceNow ?? 0) >= 30) {
-                credentials = agyCreds
+                activeCredentials = agyCreds
             } else {
                 throw ProviderError.tokenExpired(expiredMessage)
             }
@@ -193,12 +196,12 @@ actor CodeAssistProvider: UsageProvider {
         // passed over, not a failed reading, and the production host still gets its turn.
         for host in hosts {
             do {
-                let account = try await loadAccount(host: host, token: credentials.accessToken, antigravity: antigravity)
+                let account = try await loadAccount(host: host, token: activeCredentials.accessToken, antigravity: antigravity)
                 if account.unsupported {
                     shutdown = true
                     continue
                 }
-                let reading = try await quota(host: host, token: credentials.accessToken, account: account, antigravity: antigravity, now: now)
+                let reading = try await quota(host: host, token: activeCredentials.accessToken, account: account, antigravity: antigravity, now: now)
                 if Self.looksMetered(reading, now: now) { return reading }
                 unmetered = unmetered ?? reading
             } catch let error as ProviderError {
@@ -225,6 +228,9 @@ actor CodeAssistProvider: UsageProvider {
             }
             if summaryResponse?.statusCode == 401 {
                 throw ProviderError.notSignedIn(refusedMessage)
+            }
+            if summaryResponse?.statusCode == 403, Self.isSubscriptionRequired(summary) {
+                throw ProviderError.notServed(Self.shutdownMessage)
             }
         }
         let quotaURL = Self.url(host: host, method: "retrieveUserQuota")

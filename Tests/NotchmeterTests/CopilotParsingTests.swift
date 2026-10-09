@@ -562,7 +562,13 @@ import Testing
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubProtocol.self]
         let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
-        await #expect(throws: (any Error).self) { try await provider.fetch() }
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected offline error when network request fails")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            #expect(error == .offline(L("Offline, retrying")))
+        }
     }
 
     @Test func fetchIncludesOrgBillingWhenOptedIn() async throws {
@@ -762,6 +768,107 @@ import Testing
                 #expect(msg.contains("hosts.json"))
             default:
                 Issue.record("Expected .notSignedIn, got \(error)")
+            }
+        }
+    }
+
+    @Test func fetchContinuesToNextCandidateWhenFirstCandidateReturns500() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-500-recover-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"gho_failing_500"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        try Data(#"{"github.com":{"oauth_token":"gho_working_200"}}"#.utf8).write(to: config.appendingPathComponent("apps.json"))
+
+        let validBody = #"{"copilot_plan":"individual","quota_snapshots":{"premium_interactions":{"entitlement":100,"remaining":75}}}"#
+        let answers = Answers()
+        answers.status = { token, url in
+            if token.contains("gho_failing_500") {
+                return (500, Data("internal error".utf8))
+            } else if token.contains("gho_working_200") {
+                return (200, Data(validBody.utf8))
+            }
+            return (500, Data())
+        }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        let reading = try await provider.fetch()
+        #expect(reading.tool == .copilot)
+        #expect(reading.windows.count == 1)
+        #expect(reading.windows[0].usedFraction == 0.25)
+    }
+
+    @Test func fetchPrioritizesRefusedNotSignedInOver500ServerError() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-500-refused-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"gho_failing_500"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        try Data(#"{"github.com":{"oauth_token":"gho_refused_401"}}"#.utf8).write(to: config.appendingPathComponent("apps.json"))
+
+        let answers = Answers()
+        answers.status = { token, url in
+            if token.contains("gho_failing_500") {
+                return (500, Data("server error".utf8))
+            } else if token.contains("gho_refused_401") {
+                return (401, Data())
+            }
+            return (500, Data())
+        }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notSignedIn when candidate is refused even with 500 on other candidate")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .notSignedIn(let msg):
+                #expect(msg.contains("apps.json"))
+            default:
+                Issue.record("Expected .notSignedIn, got \(error)")
+            }
+        }
+    }
+
+    @Test func fetchAllCandidates500ThrowsServerError() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-all-500-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"gho_500_a"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        try Data(#"{"github.com":{"oauth_token":"gho_500_b"}}"#.utf8).write(to: config.appendingPathComponent("apps.json"))
+
+        let answers = Answers()
+        answers.status = { _, _ in (500, Data("down".utf8)) }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected http error on all candidates 500")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            switch error {
+            case .http(let code, _): #expect(code == 500)
+            default: Issue.record("Expected .http(500), got \(error)")
             }
         }
     }

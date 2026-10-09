@@ -73,8 +73,17 @@ actor CopilotProvider: UsageProvider {
         }
         var refused: [URL] = []
         var noSubCount = 0
+        var serverError: ProviderError?
         for candidate in candidates {
-            let (data, response) = try await get(Self.userURL, token: candidate.token, copilotHeaders: true)
+            let data: Data
+            let response: HTTPURLResponse?
+            do {
+                (data, response) = try await get(Self.userURL, token: candidate.token, copilotHeaders: true)
+            } catch let error as ProviderError {
+                if case .offline = error { throw error }
+                serverError = error
+                continue
+            }
             switch response?.statusCode ?? 0 {
             case 200:
                 working = candidate
@@ -93,7 +102,8 @@ actor CopilotProvider: UsageProvider {
             case 429:
                 throw ProviderError.rateLimited(retryAfter: RetryAfter.seconds(from: response))
             case let code:
-                throw ProviderError.http(code, L("GitHub's Copilot endpoint answered"))
+                serverError = ProviderError.http(code, L("GitHub's Copilot endpoint answered"))
+                continue
             }
         }
         working = nil
@@ -103,6 +113,9 @@ actor CopilotProvider: UsageProvider {
         }
         if noSubCount > 0 {
             throw ProviderError.unavailable(L("This GitHub account has no Copilot subscription"))
+        }
+        if let serverError {
+            throw serverError
         }
         throw ProviderError.notSignedIn(L("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage"))
     }
@@ -121,10 +134,15 @@ actor CopilotProvider: UsageProvider {
             request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(Self.apiVersion, forHTTPHeaderField: "X-GitHub-Api-Version")
         }
-        let (data, response) = try await (session ?? NetworkSession.shared).data(for: request)
-        let http = response as? HTTPURLResponse
-        DiagnosticLog.request(log, url.lastPathComponent, status: http?.statusCode ?? 0, bytes: data.count)
-        return (data, http)
+        do {
+            let (data, response) = try await (session ?? NetworkSession.shared).data(for: request)
+            let http = response as? HTTPURLResponse
+            DiagnosticLog.request(log, url.lastPathComponent, status: http?.statusCode ?? 0, bytes: data.count)
+            return (data, http)
+        } catch {
+            if let offline = ProviderError.offline(from: error) { throw offline }
+            throw error
+        }
     }
 
     /// The organisations the token holder belongs to, and for each that answers, its Copilot billing for the month.
