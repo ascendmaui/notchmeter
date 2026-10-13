@@ -46,20 +46,52 @@ enum CommandLineTool {
         arguments.dropFirst().lazy.filter { !$0.hasPrefix("-") }.compactMap { ToolID(rawValue: $0.lowercased()) }.first
     }
 
+    enum Subcommand: String, CaseIterable {
+        case accounts
+        case rotation
+        case chatgptHeavy = "chatgpt-heavy"
+    }
+
+    /// The subcommand named on the command line, when one is.
+    static func subcommand(in arguments: [String]) -> Subcommand? {
+        let args = arguments.dropFirst().lazy.filter { !$0.hasPrefix("-") }.map { $0.lowercased() }
+        for arg in args {
+            if let sub = Subcommand(rawValue: arg) { return sub }
+            if arg == "chatgpt_heavy" || arg == "chatgptheavy" { return .chatgptHeavy }
+        }
+        if arguments.contains("--accounts") { return .accounts }
+        if arguments.contains("--rotation") { return .rotation }
+        if arguments.contains("--chatgpt-heavy") || arguments.contains("--chatgpt_heavy") { return .chatgptHeavy }
+        return nil
+    }
+
     /// The `--help` usage line, with the tools it takes read off the enum so it cannot fall behind it.
-    static let usage = "usage: notchmeter [\(ToolID.allCases.map(\.rawValue).joined(separator: "|"))] [--force] [--json]"
+    static let usage = "usage: notchmeter [\(ToolID.allCases.map(\.rawValue).joined(separator: "|"))|accounts|rotation|chatgpt-heavy] [--force] [--json]"
 
     static func run(arguments: [String]) -> Never {
         if arguments.contains("--help") || arguments.contains("-h") {
             Probe.emit(usage)
             Probe.emit("  reads the running app's cached report; --force reads every vendor afresh")
+            Probe.emit("  subcommands: accounts, rotation, chatgpt-heavy")
             Probe.emit("  exit codes: 0 fine, 10 near a limit, 11 limit hit, 20 nothing used, 30 no data")
             exit(0)
         }
         let json = arguments.contains("--json")
         let force = arguments.contains("--force")
         let tool = tool(in: arguments)
+        let subcommand = subcommand(in: arguments)
         if let (data, source) = cachedReport(force: force) {
+            if let subcommand {
+                let parsed = Self.parsedSubcommand(data, subcommand: subcommand)
+                if json {
+                    FileHandle.standardOutput.write(parsed.data)
+                    FileHandle.standardOutput.write(Data("\n".utf8))
+                } else {
+                    Probe.emit("\(AppInfo.name) (from the app's \(source.rawValue))")
+                    Probe.emit(parsed.text)
+                }
+                exit(parsed.exitCode)
+            }
             let report = Self.parsed(data, tool: tool)
             if json {
                 FileHandle.standardOutput.write(report.data)
@@ -72,6 +104,17 @@ enum CommandLineTool {
         }
         Task.detached {
             let report = await Probe.gather()
+            if let subcommand {
+                let parsed = Self.parsedSubcommand(report.json, subcommand: subcommand)
+                if json {
+                    FileHandle.standardOutput.write(parsed.data)
+                    FileHandle.standardOutput.write(Data("\n".utf8))
+                } else {
+                    Probe.emit("\(AppInfo.name) (live probe; the app is not running or --force was given)")
+                    Probe.emit(parsed.text)
+                }
+                exit(parsed.exitCode)
+            }
             let limited = tool.map { report.limited(to: $0) } ?? report
             if json {
                 FileHandle.standardOutput.write(limited.json)
@@ -93,9 +136,178 @@ enum CommandLineTool {
             root["tools"] = tools.filter { $0["tool"] as? String == tool.rawValue }
             root["advice"] = (root["advice"] as? [[String: Any]])?.filter { $0["tool"] as? String == tool.rawValue } ?? []
             if tool != .claude { root["cost"] = nil }
+            if tool != .antigravity { root["antigravityAccounts"] = nil }
+            if tool != .chatgpt { root["chatgptHeavy"] = nil }
         }
         let encoded = (try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? data
         return (encoded, describe(root), Int32(JSON.number(root["exitCode"]) ?? 30))
+    }
+
+    /// Subcommand parsing: accounts, rotation, or chatgpt-heavy.
+    static func parsedSubcommand(_ data: Data, subcommand: Subcommand) -> (data: Data, text: String, exitCode: Int32) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (data, String(decoding: data, as: UTF8.self), 30)
+        }
+        switch subcommand {
+        case .accounts:
+            guard let agy = root["antigravityAccounts"] as? [String: Any] else {
+                let err: [String: Any] = ["error": "No Antigravity accounts configured"]
+                let errData = (try? JSONSerialization.data(withJSONObject: err)) ?? data
+                return (errData, "No Antigravity accounts configured.", 30)
+            }
+            let encoded = (try? JSONSerialization.data(withJSONObject: agy, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? data
+            let exitCode: Int32 = (agy["signedIn"] as? Int ?? 0) > 0 ? 0 : 30
+            return (encoded, describeAccounts(root), exitCode)
+        case .rotation:
+            guard let agy = root["antigravityAccounts"] as? [String: Any] else {
+                let err: [String: Any] = ["error": "No Antigravity accounts configured"]
+                let errData = (try? JSONSerialization.data(withJSONObject: err)) ?? data
+                return (errData, "No Antigravity accounts configured.", 30)
+            }
+            var rotationObj: [String: Any] = [
+                "activeSlot": agy["activeSlot"] as Any,
+                "activeEmail": agy["activeEmail"] as Any,
+                "currentSlot": agy["currentSlot"] as Any,
+                "currentEmail": agy["currentEmail"] as Any,
+                "activeHasClaudeRoom": agy["activeHasClaudeRoom"] as Any,
+                "activeHasGeminiRoom": agy["activeHasGeminiRoom"] as Any,
+                "recommendedNextSlot": agy["recommendedNextSlot"] as Any,
+                "recommendedNextEmail": agy["recommendedNextEmail"] as Any,
+                "recommendedNextClaudeSlot": agy["recommendedNextClaudeSlot"] as Any,
+                "recommendedNextClaudeEmail": agy["recommendedNextClaudeEmail"] as Any,
+                "recommendedNextGeminiSlot": agy["recommendedNextGeminiSlot"] as Any,
+                "recommendedNextGeminiEmail": agy["recommendedNextGeminiEmail"] as Any,
+                "rotationAdvice": agy["rotationAdvice"] as Any,
+                "claudeRotationAdvice": agy["claudeRotationAdvice"] as Any,
+                "geminiRotationAdvice": agy["geminiRotationAdvice"] as Any,
+            ]
+            if let v = agy["activeClaudeSessionUsed"] { rotationObj["activeClaudeSessionUsed"] = v }
+            if let v = agy["activeClaudeSessionResetsAt"] { rotationObj["activeClaudeSessionResetsAt"] = v }
+            if let v = agy["activeClaudeSessionResetsInSeconds"] { rotationObj["activeClaudeSessionResetsInSeconds"] = v }
+            if let v = agy["activeGeminiSessionUsed"] { rotationObj["activeGeminiSessionUsed"] = v }
+            if let v = agy["activeGeminiSessionResetsAt"] { rotationObj["activeGeminiSessionResetsAt"] = v }
+            if let v = agy["activeGeminiSessionResetsInSeconds"] { rotationObj["activeGeminiSessionResetsInSeconds"] = v }
+            if let v = agy["earliestClaudeResetSlot"] { rotationObj["earliestClaudeResetSlot"] = v }
+            if let v = agy["earliestClaudeResetAt"] { rotationObj["earliestClaudeResetAt"] = v }
+            if let v = agy["earliestClaudeResetsInSeconds"] { rotationObj["earliestClaudeResetsInSeconds"] = v }
+            if let v = agy["earliestGeminiResetSlot"] { rotationObj["earliestGeminiResetSlot"] = v }
+            if let v = agy["earliestGeminiResetAt"] { rotationObj["earliestGeminiResetAt"] = v }
+            if let v = agy["earliestGeminiResetsInSeconds"] { rotationObj["earliestGeminiResetsInSeconds"] = v }
+            let encoded = (try? JSONSerialization.data(withJSONObject: rotationObj, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? data
+            let exitCode: Int32 = (agy["signedIn"] as? Int ?? 0) > 0 ? 0 : 30
+            return (encoded, describeRotation(root), exitCode)
+        case .chatgptHeavy:
+            guard let cgt = root["chatgptHeavy"] as? [String: Any] else {
+                let err: [String: Any] = ["error": "ChatGPT-heavy provider not configured or no weekly resets found"]
+                let errData = (try? JSONSerialization.data(withJSONObject: err)) ?? data
+                return (errData, "ChatGPT-heavy provider not configured or no weekly resets found.", 30)
+            }
+            let encoded = (try? JSONSerialization.data(withJSONObject: cgt, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? data
+            return (encoded, describeChatGPTHeavy(root), 0)
+        }
+    }
+
+    static func describeAccounts(_ root: [String: Any]) -> String {
+        guard let agy = root["antigravityAccounts"] as? [String: Any] else {
+            return "No Antigravity accounts configured."
+        }
+        var lines: [String] = []
+        let total = agy["total"] as? Int ?? 0
+        let signedIn = agy["signedIn"] as? Int ?? 0
+        lines.append("Antigravity Accounts: \(total) configured (\(signedIn) ready)")
+        for slot in agy["slots"] as? [[String: Any]] ?? [] {
+            let s = slot["slot"] as? String ?? "?"
+            let email = slot["email"] as? String ?? "?"
+            let currentTag = (slot["isCurrent"] as? Bool == true) ? " (current)" : ""
+            let status = slot["status"] as? String ?? "?"
+            if status == "ready" {
+                var parts: [String] = []
+                if let cUsed = JSON.number(slot["claudeSessionUsed"]) {
+                    var cp = "Claude Session: \(Int((cUsed * 100).rounded()))%"
+                    if let cSec = JSON.number(slot["claudeSessionResetsInSeconds"]), cSec > 0 {
+                        cp += " (resets in \(ResetText.duration(TimeInterval(cSec))))"
+                    }
+                    parts.append(cp)
+                }
+                if let gUsed = JSON.number(slot["geminiSessionUsed"]) {
+                    var gp = "Gemini Session: \(Int((gUsed * 100).rounded()))%"
+                    if let gSec = JSON.number(slot["geminiSessionResetsInSeconds"]), gSec > 0 {
+                        gp += " (resets in \(ResetText.duration(TimeInterval(gSec))))"
+                    }
+                    parts.append(gp)
+                }
+                let details = parts.isEmpty ? "ready" : parts.joined(separator: ", ")
+                lines.append("  [\(s)] \(email)\(currentTag): \(details)")
+            } else {
+                lines.append("  [\(s)] \(email)\(currentTag): \(status)")
+            }
+        }
+        if let advice = agy["rotationAdvice"] as? String {
+            lines.append("Rotation: \(advice)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func describeRotation(_ root: [String: Any]) -> String {
+        guard let agy = root["antigravityAccounts"] as? [String: Any] else {
+            return "No Antigravity accounts configured."
+        }
+        var lines: [String] = ["Antigravity Rotation:"]
+        let curSlot = agy["currentSlot"] as? String ?? agy["activeSlot"] as? String ?? "?"
+        let curEmail = agy["currentEmail"] as? String ?? agy["activeEmail"] as? String ?? ""
+        lines.append("  Active slot: [\(curSlot)]" + (curEmail.isEmpty ? "" : " (\(curEmail))"))
+        if let nextC = agy["recommendedNextClaudeSlot"] as? String {
+            let nextCEmail = (agy["recommendedNextClaudeEmail"] as? String).map { " (\($0))" } ?? ""
+            lines.append("  Next Claude slot: [\(nextC)]\(nextCEmail)")
+        } else if let resetSlot = agy["earliestClaudeResetSlot"] as? String, let resetSec = JSON.number(agy["earliestClaudeResetsInSeconds"]) {
+            lines.append("  Next Claude slot: all exhausted; earliest [\(resetSlot)] in \(ResetText.duration(TimeInterval(resetSec)))")
+        }
+        if let nextG = agy["recommendedNextGeminiSlot"] as? String {
+            let nextGEmail = (agy["recommendedNextGeminiEmail"] as? String).map { " (\($0))" } ?? ""
+            lines.append("  Next Gemini slot: [\(nextG)]\(nextGEmail)")
+        } else if let resetSlot = agy["earliestGeminiResetSlot"] as? String, let resetSec = JSON.number(agy["earliestGeminiResetsInSeconds"]) {
+            lines.append("  Next Gemini slot: all exhausted; earliest [\(resetSlot)] in \(ResetText.duration(TimeInterval(resetSec)))")
+        }
+        if let advice = agy["rotationAdvice"] as? String {
+            lines.append("  Advice: \(advice)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func describeChatGPTHeavy(_ root: [String: Any]) -> String {
+        guard let cgt = root["chatgptHeavy"] as? [String: Any] else {
+            return "ChatGPT-heavy provider not configured or no weekly resets found."
+        }
+        var lines: [String] = ["ChatGPT-Heavy Burn Routing (Priority 1):"]
+        let total = cgt["totalResets"] as? Int ?? 4
+        let empty = cgt["emptyResets"] as? Int ?? 0
+        lines.append("  Available weekly resets: \(empty) of \(total)")
+        if let activeLabel = cgt["activeWindowLabel"] as? String {
+            var activeLine = "  Active reset: \(activeLabel)"
+            if let sec = JSON.number(cgt["activeWindowResetsInSeconds"]), sec > 0 {
+                activeLine += " (resets in \(ResetText.duration(TimeInterval(sec))))"
+            }
+            lines.append(activeLine)
+        }
+        if let advice = cgt["burnAdvice"] as? String {
+            lines.append("  Advice: \(advice)")
+        }
+        if let windows = cgt["windows"] as? [[String: Any]], !windows.isEmpty {
+            lines.append("  Windows:")
+            for w in windows {
+                let label = w["label"] as? String ?? w["id"] as? String ?? "?"
+                let used = Int(((JSON.number(w["usedFraction"]) ?? 0) * 100).rounded())
+                let room = Int(((JSON.number(w["headroomFraction"]) ?? 1.0) * 100).rounded())
+                let status = w["status"] as? String ?? ""
+                var wLine = "    \(label): \(used)% used, \(room)% headroom (\(status)"
+                if let sec = JSON.number(w["resetsInSeconds"]), sec > 0 {
+                    wLine += ", resets in \(ResetText.duration(TimeInterval(sec)))"
+                }
+                wLine += ")"
+                lines.append(wLine)
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     static func describe(_ root: [String: Any]) -> String {
@@ -116,6 +328,54 @@ enum CommandLineTool {
                     lines.append(part)
                 } else {
                     lines.append("  \(label): no limit published")
+                }
+            }
+            if let accounts = tool["accounts"] as? [[String: Any]], !accounts.isEmpty {
+                let readyCount = accounts.filter { ($0["status"] as? String) == "ready" }.count
+                lines.append("  accounts: \(accounts.count) configured (\(readyCount) ready)")
+                for acct in accounts {
+                    let slot = acct["slot"] as? String ?? "?"
+                    let email = acct["email"] as? String ?? "?"
+                    let currentTag = (acct["isCurrent"] as? Bool == true) ? " (current)" : ""
+                    let acctStatus = acct["status"] as? String ?? "?"
+                    if acctStatus == "ready", let wins = acct["windows"] as? [[String: Any]], !wins.isEmpty {
+                        let winSummaries = wins.compactMap { w -> String? in
+                            guard let label = w["label"] as? String, let used = JSON.number(w["usedFraction"]) else { return nil }
+                            var part = "\(label): \(Int((used * 100).rounded()))%"
+                            let wid = (w["id"] as? String) ?? ""
+                            if let resetsStr = w["resetsAt"] as? String, let date = DateParsing.iso8601(resetsStr) {
+                                if used >= 0.8 || wid.contains("session") || wid.contains("5h") {
+                                    part += " (\(RelativeTime.resets(date, hasLimit: true)))"
+                                }
+                            }
+                            return part
+                        }.joined(separator: ", ")
+                        lines.append("    [\(slot)] \(email)\(currentTag): \(winSummaries)")
+                    } else {
+                        lines.append("    [\(slot)] \(email)\(currentTag): \(acctStatus)")
+                    }
+                }
+                if let advice = tool["rotationAdvice"] as? String {
+                    lines.append("  rotation: \(advice)")
+                } else if let nextSlot = tool["recommendedNextSlot"] as? String, let nextEmail = tool["recommendedNextEmail"] as? String {
+                    lines.append("  rotation: next recommended slot is [\(nextSlot)] (\(nextEmail))")
+                } else if let resetSlot = tool["earliestClaudeResetSlot"] as? String, let resetAtStr = tool["earliestClaudeResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
+                    lines.append("  rotation: all Claude sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
+                } else if let resetSlot = tool["earliestGeminiResetSlot"] as? String, let resetAtStr = tool["earliestGeminiResetAt"] as? String, let resetDate = DateParsing.iso8601(resetAtStr) {
+                    lines.append("  rotation: all Gemini sessions exhausted; earliest [\(resetSlot)] \(RelativeTime.resets(resetDate, hasLimit: true))")
+                }
+            }
+            if tool["tool"] as? String == "chatgpt", let empty = tool["emptyResetsCount"] as? Int, let total = tool["weeklyResetsCount"] as? Int {
+                var cgtLine = "  chatgpt-heavy: \(empty) of \(total) weekly resets available for burn routing (priority 1)"
+                if let activeLabel = tool["activeWindowLabel"] as? String {
+                    cgtLine += " — active: \(activeLabel)"
+                    if let resetStr = tool["activeWindowResetsAt"] as? String, let resetDate = DateParsing.iso8601(resetStr) {
+                        cgtLine += " (\(RelativeTime.resets(resetDate, hasLimit: true)))"
+                    }
+                }
+                lines.append(cgtLine)
+                if let burnAdvice = tool["burnAdvice"] as? String {
+                    lines.append("  burn-advice: \(burnAdvice)")
                 }
             }
         }

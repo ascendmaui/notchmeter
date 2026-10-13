@@ -90,7 +90,7 @@ import Testing
         await timer.value
         // The press must never reach the provider: this wait is expected to give up. Once it has, a read that did
         // start late passes straight through rather than parking for ever, so `pressed` still finishes.
-        let pressBegan = await provider.fetchesBegun(2)
+        let pressBegan = await provider.fetchesBegun(2, limitMs: 100)
         #expect(!pressBegan, "the press's read must not start for a tool switched off while it waited")
         await provider.release()
         await pressed.value
@@ -140,9 +140,9 @@ actor ParkedProvider: UsageProvider {
     /// it. The one test that expects a read *not* to start asserts the false; the others assert the true, so a store
     /// that dropped a read fails at the line that waited for it rather than at some later one.
     @discardableResult
-    func fetchesBegun(_ count: Int) async -> Bool {
-        for _ in 0..<1000 where interactives.count < count {
-            await Task.yield()
+    func fetchesBegun(_ count: Int, limitMs: Int = 1000) async -> Bool {
+        for _ in 0..<limitMs where interactives.count < count {
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
         let begun = interactives.count >= count
         if !begun { abandoned = true }

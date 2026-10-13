@@ -6,6 +6,13 @@ private let log = Logger(subsystem: "com.amirhackett.notchmeter", category: "cod
 struct CodeAssistCredentials: Equatable {
     let accessToken: String
     let expiresAt: Date?
+    let email: String?
+
+    init(accessToken: String, expiresAt: Date?, email: String? = nil) {
+        self.accessToken = accessToken
+        self.expiresAt = expiresAt
+        self.email = email
+    }
 }
 
 /// One actor type serves two rows since 0.9.0: Gemini CLI's (`tool: .gemini`) and Antigravity's
@@ -72,6 +79,8 @@ actor CodeAssistProvider: UsageProvider {
     /// `~/.gemini/antigravity-cli`: the Antigravity CLI's own folder, whose presence marks the login as Antigravity's
     /// and whose `cli.log` names the deployment the account is metered on.
     nonisolated let antigravityCLIHome: URL
+    /// `~/.gemini/antigravity-cli/antigravity-oauth-token`: Antigravity CLI's OAuth token file.
+    nonisolated let antigravityTokenFile: URL
 
     static let productionHost = "cloudcode-pa.googleapis.com"
     static let dailyHost = "daily-cloudcode-pa.googleapis.com"
@@ -116,6 +125,7 @@ actor CodeAssistProvider: UsageProvider {
         self.session = session
         credentialsFile = geminiHome.appendingPathComponent("oauth_creds.json")
         antigravityCLIHome = geminiHome.appendingPathComponent("antigravity-cli")
+        antigravityTokenFile = antigravityCLIHome.appendingPathComponent("antigravity-oauth-token")
         self.applicationBundle = applicationBundle
         self.antigravityHome = antigravityHome
     }
@@ -124,8 +134,10 @@ actor CodeAssistProvider: UsageProvider {
     /// folder is here (`antigravityPresent`); with no Gemini CLI login beside it the row says how to give it one.
     nonisolated func isInstalled() -> Bool {
         switch tool {
-        case .antigravity: antigravityPresent
-        default: FileManager.default.fileExists(atPath: credentialsFile.path)
+        case .antigravity:
+            antigravityPresent || FileManager.default.fileExists(atPath: antigravityTokenFile.path)
+        default:
+            FileManager.default.fileExists(atPath: credentialsFile.path)
         }
     }
 
@@ -160,9 +172,16 @@ actor CodeAssistProvider: UsageProvider {
     }
 
     func fetch() async throws -> UsageReading {
-        guard let data = try? Data(contentsOf: credentialsFile) else {
+        var credData: Data?
+        if tool == .antigravity {
+            credData = try? Data(contentsOf: antigravityTokenFile)
+        }
+        if credData == nil {
+            credData = try? Data(contentsOf: credentialsFile)
+        }
+        guard let data = credData else {
             throw ProviderError.notSignedIn(tool == .antigravity
-                ? L("Antigravity keeps its own login in the Keychain; sign in to Gemini CLI with the same Google account (run `gemini` and choose Login with Google) to read its quota")
+                ? L("Antigravity keeps its own login in ~/.gemini/antigravity-cli/antigravity-oauth-token or the Keychain; sign in to Gemini CLI or run `agy` to read its quota")
                 : L("Sign in to Gemini CLI (run `gemini` and choose Login with Google) to read your quota"))
         }
         let credentials = try Self.parseCredentials(data)
@@ -276,12 +295,32 @@ actor CodeAssistProvider: UsageProvider {
     // MARK: - Parsing
 
     static func parseCredentials(_ data: Data) throws -> CodeAssistCredentials {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = root["access_token"] as? String, !token.isEmpty
-        else {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderError.notSignedIn(L("Code Assist credentials unreadable"))
+        }
+        // Format 1: antigravity-oauth-token: { "token": { "access_token": "ya29...", ... }, "id_token": "..." }
+        if let tokenObj = root["token"] as? [String: Any],
+           let token = tokenObj["access_token"] as? String, !token.isEmpty {
+            let expiresAt = (tokenObj["expiry"] as? String).flatMap(DateParsing.iso8601)
+                ?? JSON.number(tokenObj["expiry_date"]).map { Date(timeIntervalSince1970: $0 / 1000) }
+            let email = (root["id_token"] as? String).flatMap(AntigravityAccounts.extractEmailFromJWT)
+            return CodeAssistCredentials(accessToken: token, expiresAt: expiresAt, email: email)
+        }
+        // Format 2: direct string token in { "token": "ya29...", ... }
+        if let token = root["token"] as? String, !token.isEmpty {
+            let expiresAt = (root["expiry"] as? String).flatMap(DateParsing.iso8601)
+                ?? JSON.number(root["expiry_date"]).map { Date(timeIntervalSince1970: $0 / 1000) }
+            let email = (root["id_token"] as? String).flatMap(AntigravityAccounts.extractEmailFromJWT)
+            return CodeAssistCredentials(accessToken: token, expiresAt: expiresAt, email: email)
+        }
+        // Format 3: oauth_creds.json: { "access_token": "ya29...", ... }
+        guard let token = root["access_token"] as? String, !token.isEmpty else {
             throw ProviderError.notSignedIn(L("Gemini CLI has not signed in with Google. Run `gemini` and choose Login with Google"))
         }
-        return CodeAssistCredentials(accessToken: token, expiresAt: JSON.number(root["expiry_date"]).map { Date(timeIntervalSince1970: $0 / 1000) })
+        let expiresAt = (root["expiry"] as? String).flatMap(DateParsing.iso8601)
+            ?? JSON.number(root["expiry_date"]).map { Date(timeIntervalSince1970: $0 / 1000) }
+        let email = (root["id_token"] as? String).flatMap(AntigravityAccounts.extractEmailFromJWT)
+        return CodeAssistCredentials(accessToken: token, expiresAt: expiresAt, email: email)
     }
 
     static func parseAccount(_ data: Data) throws -> Account {

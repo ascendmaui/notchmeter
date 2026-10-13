@@ -1560,7 +1560,7 @@ struct SettingsView: View {
                 Toggle(L("Show sessions read from OpenCode's database"), isOn: Binding(get: { prefs.openCodeStorageSessions }, set: { prefs.openCodeStorageSessions = $0 }))
                     .help(L("With nothing installed, OpenCode's own database on this Mac is read every few seconds while OpenCode writes to it, and never written: a session appears when it starts, works from its prompt until the answer closes, and goes idle a few seconds after. It cannot see OpenCode stop to ask your permission. The OpenCode plugin under Integrations reports that and each turn's end as they happen, and once it has, this reading stands down."))
                 pageText(L("OpenCode Go publishes no reading of its limits, so its meters are computed here from this Mac's own turns at the Go page's prices."))
-            case .gemini, .antigravity, .kimi:
+            case .gemini, .antigravity, .kimi, .chatgpt, .grok, .hermes, .openclaw:
                 EmptyView()
             }
         }
@@ -1608,6 +1608,14 @@ struct SettingsView: View {
             L("Kimi Code's own login: the access token in credentials/kimi-code.json under $KIMI_SHARE_DIR or ~/.kimi; the refresh token beside it is never read. Read only: never refreshed or written.")
         case .opencode:
             L("No login: OpenCode's own database on this Mac, opened read-only. Nothing is sent, and no token is read.")
+        case .chatgpt:
+            L("ChatGPT desktop / web session on this Mac. Stub: reads presence only until the four weekly reset endpoints are reverse-documented. Read only.")
+        case .grok:
+            L("Grok Bot.app / SuperGrok Application Support on this Mac. Stub: presence only until xAI usage paths are documented. Read only.")
+        case .hermes:
+            L("Hermes Application Support folder on this Mac. Stub: presence only. Read only.")
+        case .openclaw:
+            L("OpenClaw Application Support and/or OpenClaw Dashboard.app on this Mac. Stub: presence only. Read only.")
         }
     }
 
@@ -1631,6 +1639,14 @@ struct SettingsView: View {
             L("api.kimi.com's usage endpoint, the read Kimi Code's own /usage command makes. No cost: it meters a request allowance, not money.")
         case .opencode:
             L("OpenCode's recorded turns and sessions, and on the Go plan a meter computed here from them at the Go page's prices and limits; its cost from the same records.")
+        case .chatgpt:
+            L("Stub: will meter ChatGPT Plus/Pro's four weekly usage resets once the vendor endpoint or desktop store is mapped. No cost dollars yet.")
+        case .grok:
+            L("Stub: will meter standalone Grok / xAI plan windows once documented. Distinct from Cursor's Grok Bot seat. No cost dollars yet.")
+        case .hermes:
+            L("Stub: will meter Hermes local state once documented. No cost dollars yet.")
+        case .openclaw:
+            L("Stub: will meter OpenClaw local state / dashboard once documented. No cost dollars yet.")
         }
     }
 
@@ -1642,6 +1658,7 @@ struct SettingsView: View {
         case .kimi: L("Kimi Code has no event that can be answered: its approvals are always answered in the terminal.")
         case .antigravity: L("Antigravity has no hook: its IDE reports no event the notch could read or answer.")
         case .opencode: L("OpenCode's plugin reports its permission requests and their answers but cannot answer them: its approvals are always answered in OpenCode.")
+        case .chatgpt, .grok, .hermes, .openclaw: L("No hook yet for this assistant: nothing to answer from the notch.")
         case .claude, .codex, .copilot: nil
         }
     }

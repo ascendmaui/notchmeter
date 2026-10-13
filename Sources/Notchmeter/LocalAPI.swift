@@ -153,6 +153,56 @@ final class LocalAPI {
                 return Self.response(status: 404, body: Data("{\"error\":\"not found\"}".utf8))
             }
             return Self.response(status: 200, body: report().limited(to: tool).json)
+        case ("GET", "/v1/accounts"), ("GET", "/v1/accounts/"):
+            let rep = report()
+            if let accountsObj = rep.object["antigravityAccounts"] {
+                let data = (try? JSONSerialization.data(withJSONObject: accountsObj, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+                return Self.response(status: 200, body: data)
+            }
+            return Self.response(status: 404, body: Data("{\"error\":\"no antigravity accounts found\"}".utf8))
+        case ("GET", "/v1/rotation"), ("GET", "/v1/rotation/"):
+            let rep = report()
+            if let agy = rep.object["antigravityAccounts"] as? [String: Any] {
+                var rotationObj: [String: Any] = [
+                    "activeSlot": agy["activeSlot"] as Any,
+                    "activeEmail": agy["activeEmail"] as Any,
+                    "currentSlot": agy["currentSlot"] as Any,
+                    "currentEmail": agy["currentEmail"] as Any,
+                    "activeHasClaudeRoom": agy["activeHasClaudeRoom"] as Any,
+                    "activeHasGeminiRoom": agy["activeHasGeminiRoom"] as Any,
+                    "recommendedNextSlot": agy["recommendedNextSlot"] as Any,
+                    "recommendedNextEmail": agy["recommendedNextEmail"] as Any,
+                    "recommendedNextClaudeSlot": agy["recommendedNextClaudeSlot"] as Any,
+                    "recommendedNextClaudeEmail": agy["recommendedNextClaudeEmail"] as Any,
+                    "recommendedNextGeminiSlot": agy["recommendedNextGeminiSlot"] as Any,
+                    "recommendedNextGeminiEmail": agy["recommendedNextGeminiEmail"] as Any,
+                    "rotationAdvice": agy["rotationAdvice"] as Any,
+                    "claudeRotationAdvice": agy["claudeRotationAdvice"] as Any,
+                    "geminiRotationAdvice": agy["geminiRotationAdvice"] as Any,
+                ]
+                if let v = agy["activeClaudeSessionUsed"] { rotationObj["activeClaudeSessionUsed"] = v }
+                if let v = agy["activeClaudeSessionResetsAt"] { rotationObj["activeClaudeSessionResetsAt"] = v }
+                if let v = agy["activeClaudeSessionResetsInSeconds"] { rotationObj["activeClaudeSessionResetsInSeconds"] = v }
+                if let v = agy["activeGeminiSessionUsed"] { rotationObj["activeGeminiSessionUsed"] = v }
+                if let v = agy["activeGeminiSessionResetsAt"] { rotationObj["activeGeminiSessionResetsAt"] = v }
+                if let v = agy["activeGeminiSessionResetsInSeconds"] { rotationObj["activeGeminiSessionResetsInSeconds"] = v }
+                if let v = agy["earliestClaudeResetSlot"] { rotationObj["earliestClaudeResetSlot"] = v }
+                if let v = agy["earliestClaudeResetAt"] { rotationObj["earliestClaudeResetAt"] = v }
+                if let v = agy["earliestClaudeResetsInSeconds"] { rotationObj["earliestClaudeResetsInSeconds"] = v }
+                if let v = agy["earliestGeminiResetSlot"] { rotationObj["earliestGeminiResetSlot"] = v }
+                if let v = agy["earliestGeminiResetAt"] { rotationObj["earliestGeminiResetAt"] = v }
+                if let v = agy["earliestGeminiResetsInSeconds"] { rotationObj["earliestGeminiResetsInSeconds"] = v }
+                let data = (try? JSONSerialization.data(withJSONObject: rotationObj, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+                return Self.response(status: 200, body: data)
+            }
+            return Self.response(status: 404, body: Data("{\"error\":\"no antigravity rotation data found\"}".utf8))
+        case ("GET", "/v1/chatgpt-heavy"), ("GET", "/v1/chatgpt-heavy/"):
+            let rep = report()
+            if let cgtObj = rep.object["chatgptHeavy"] {
+                let data = (try? JSONSerialization.data(withJSONObject: cgtObj, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+                return Self.response(status: 200, body: data)
+            }
+            return Self.response(status: 404, body: Data("{\"error\":\"no chatgpt-heavy data found\"}".utf8))
         case ("GET", _):
             return Self.response(status: 404, body: Data("{\"error\":\"not found\"}".utf8))
         default:
