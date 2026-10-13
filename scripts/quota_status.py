@@ -973,17 +973,36 @@ def _refresh_openai(cred: Credential, transport: Transport, now: datetime) -> Cr
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
-    temporary = path.with_name(path.name + ".tmp")
+    """Best-effort token persistence: a failure keeps the old store intact and is not fatal."""
     try:
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        temporary.replace(path)
-        os.chmod(path, 0o600)
+        _atomic_write_bytes(path, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
     except OSError:
+        return
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write data to path atomically with 0600 permissions.
+
+    Uses a unique O_EXCL temp file in the same directory (no predictable name to pre-plant a
+    symlink at), fsyncs it, then renames. On any failure the temp file is removed and the
+    previous file is untouched.
+    """
+    fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
         try:
             temporary.unlink()
         except OSError:
-            return
+            pass
+        raise
+    os.chmod(path, 0o600)
 
 
 def _expiry_replacement(previous: object, expires_at: datetime | None) -> object:
@@ -1427,22 +1446,7 @@ def write_quota(path: Path, report: dict) -> None:
     data = (json.dumps(report, indent=2) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
-    os.chmod(path, 0o600)
+    _atomic_write_bytes(path, data)
 
 
 def main(argv: list[str] | None = None, *, home: Path | None = None, env: Mapping[str, str] | None = None, transport: Transport | None = None, now: datetime | None = None) -> int:
@@ -1450,7 +1454,12 @@ def main(argv: list[str] | None = None, *, home: Path | None = None, env: Mappin
     root = home if home is not None else Path.home()
     report, notes = build_report(root, env=env, now=now, transport=transport)
     destination = quota_path(root)
-    write_quota(destination, report)
+    try:
+        write_quota(destination, report)
+    except (OSError, ValueError) as error:
+        # Never echo the report or any token here; the error names only the path and the reason.
+        print(f"could not write {destination}: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")
     for note in notes:

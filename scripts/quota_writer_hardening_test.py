@@ -100,6 +100,27 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual([p.name for p in path.parent.iterdir()], ["quota.json"])
 
 
+class ErrorHandlingTests(unittest.TestCase):
+    def test_main_returns_nonzero_when_quota_dir_is_unwritable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".notchmeter").write_text("not a directory")
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = quota.main(home=home, env={}, now=NOW, transport=lambda *a: (500, b""))
+            self.assertEqual(code, 1)
+            self.assertIn("could not write", err.getvalue())
+
+    def test_token_store_write_failure_keeps_old_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "auth.json"
+            path.write_text('{"old": true}')
+            with mock.patch.object(quota.os, "replace", side_effect=OSError("ro")):
+                quota._atomic_json(path, {"new": True})
+            self.assertEqual(json.loads(path.read_text()), {"old": True})
+            self.assertEqual([p.name for p in path.parent.iterdir()], ["auth.json"])
+
+
 class TokenParsingTests(unittest.TestCase):
     def test_malformed_jwts_do_not_raise(self):
         for token in ["", "abc", "a.b", "a.!!!.c", "a." + base64.urlsafe_b64encode(b"[1]").decode() + ".c", "a." + base64.urlsafe_b64encode(b"not json").decode() + ".c"]:
