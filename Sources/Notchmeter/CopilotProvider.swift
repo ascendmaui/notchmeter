@@ -172,8 +172,11 @@ actor CopilotProvider: UsageProvider {
             else { continue }
             let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             for (host, value) in root.sorted(by: { $0.key < $1.key }) where host.hasPrefix("github.com") {
-                if let token = (value as? [String: Any])?["oauth_token"] as? String, !token.isEmpty {
-                    candidates.append(TokenCandidate(token: token, file: file, modified: modified))
+                if let token = (value as? [String: Any])?["oauth_token"] as? String {
+                    let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        candidates.append(TokenCandidate(token: trimmed, file: file, modified: modified))
+                    }
                 }
             }
         }
@@ -211,7 +214,8 @@ actor CopilotProvider: UsageProvider {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("oauth_token:") {
                 let token = trimmed.dropFirst("oauth_token:".count).trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                return token.isEmpty ? nil : token
+                let clean = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                return clean.isEmpty ? nil : clean
             }
         }
         return nil
