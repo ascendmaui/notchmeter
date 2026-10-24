@@ -872,4 +872,56 @@ import Testing
             }
         }
     }
+
+    @Test func tokenCandidatesIgnoresWhitespaceOnlyTokensInHostsJSONAndYAML() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-whitespace-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        let gh = dir.appendingPathComponent("gh/hosts.yml")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        try fm.createDirectory(at: gh.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"   \t\n  "}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+        let hostsYAML = """
+        github.com:
+            oauth_token: "   "
+            user: john
+        """
+        try hostsYAML.write(to: gh, atomically: true, encoding: .utf8)
+
+        let candidates = CopilotProvider.tokenCandidates(configRoot: config, ghHosts: gh, keychain: { nil })
+        #expect(candidates.isEmpty, "whitespace-only tokens must be ignored")
+    }
+
+    @Test func candidateRefusalWith403ThrowsNotSignedInWithNeedsAttention() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("notchmeter-copilot-403-\(UUID().uuidString)")
+        let config = dir.appendingPathComponent("github-copilot")
+        try fm.createDirectory(at: config, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try Data(#"{"github.com":{"oauth_token":"gho_forbidden_token"}}"#.utf8).write(to: config.appendingPathComponent("hosts.json"))
+
+        let answers = Answers()
+        answers.status = { _, _ in (403, Data("forbidden".utf8)) }
+        StubProtocol.answers = answers
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let provider = CopilotProvider(session: URLSession(configuration: configuration), configRoot: config, ghHosts: dir.appendingPathComponent("none.yml"), defaults: .standard, history: nil)
+
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notSignedIn when candidate is refused with 403")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .notSignedIn(let msg):
+                #expect(msg.contains("hosts.json"))
+            default:
+                Issue.record("Expected .notSignedIn, got \(error)")
+            }
+        }
+    }
 }

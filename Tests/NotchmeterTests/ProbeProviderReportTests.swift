@@ -378,6 +378,20 @@ import Testing
         }
     }
 
+    @Test func withTimeoutTimesOutPromptlyEvenIfOperationIgnoresCancellation() async throws {
+        let started = Date()
+        do {
+            _ = try await Probe.withTimeout(seconds: 0.05) {
+                usleep(1_500_000)
+                return "finished"
+            }
+            Issue.record("Expected Probe.TimeoutError")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.5, "Probe.withTimeout must return promptly upon timeout rather than waiting for operation to finish: elapsed \(elapsed)s")
+        }
+    }
+
     @Test func probeReportWithNeedsAttentionToolsShowsCorrectProblemAndExitCode() throws {
         let geminiProblem = "Gemini CLI's login has expired. Run Gemini CLI once so it signs back in"
         let antigravityProblem = "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in"

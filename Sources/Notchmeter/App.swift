@@ -1841,58 +1841,66 @@ enum Probe {
         case timedOut
     }
 
-    private enum TimeoutGroupResult<R: Sendable>: Sendable {
-        case success(R)
-        case timedOut
-        case error(any Error)
+    private final class TimeoutBox<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private var continuation: CheckedContinuation<T, any Error>?
+        private var operationTask: Task<Void, Never>?
+        private var timerTask: Task<Void, Never>?
+
+        func start(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T, continuation: CheckedContinuation<T, any Error>) {
+            self.continuation = continuation
+            self.operationTask = Task {
+                do {
+                    let result = try await operation()
+                    self.finish(with: .success(result))
+                } catch {
+                    self.finish(with: .failure(error))
+                }
+            }
+            self.timerTask = Task {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
+                    self.finish(with: .failure(TimeoutError.timedOut))
+                } catch {
+                    // Timer cancelled
+                }
+            }
+        }
+
+        func cancel() {
+            finish(with: .failure(CancellationError()))
+        }
+
+        private func finish(with result: Result<T, any Error>) {
+            lock.lock()
+            if resumed {
+                lock.unlock()
+                return
+            }
+            resumed = true
+            let cont = continuation
+            let op = operationTask
+            let timer = timerTask
+            continuation = nil
+            operationTask = nil
+            timerTask = nil
+            lock.unlock()
+
+            op?.cancel()
+            timer?.cancel()
+            cont?.resume(with: result)
+        }
     }
 
     static func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        let task = Task {
-            try await operation()
-        }
-        let timeoutTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
-        }
+        let box = TimeoutBox<T>()
         return try await withTaskCancellationHandler {
-            let outcome: TimeoutGroupResult<T> = await withTaskGroup(of: TimeoutGroupResult<T>.self) { group -> TimeoutGroupResult<T> in
-                group.addTask {
-                    do {
-                        return .success(try await task.value)
-                    } catch {
-                        return .error(error)
-                    }
-                }
-                group.addTask {
-                    do {
-                        try await timeoutTask.value
-                        return .timedOut
-                    } catch {
-                        return .error(error)
-                    }
-                }
-                guard let first = await group.next() else {
-                    return TimeoutGroupResult<T>.timedOut
-                }
-                group.cancelAll()
-                return first
-            }
-            task.cancel()
-            timeoutTask.cancel()
-            switch outcome {
-            case .success(let result):
-                return result
-            case .timedOut:
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                throw TimeoutError.timedOut
-            case .error(let error):
-                throw error
+            try await withCheckedThrowingContinuation { continuation in
+                box.start(seconds: seconds, operation: operation, continuation: continuation)
             }
         } onCancel: {
-            task.cancel()
-            timeoutTask.cancel()
+            box.cancel()
         }
     }
 

@@ -93,7 +93,7 @@ import Testing
             #expect(error.message.contains("API key"))
         }
         do {
-            _ = try ClaudeProvider.resolveCredentials(configDir: dir, mayPrompt: false, environment: ["TERM": "x"], keychain: notFound, securityTool: { nil })
+            _ = try ClaudeProvider.resolveCredentials(configDir: dir, mayPrompt: false, environment: ["TERM": "x"], claudeJSON: dir.appendingPathComponent("nonexistent.json"), keychain: notFound, securityTool: { nil })
             Issue.record("expected a throw")
         } catch let error as ProviderError {
             #expect(error.needsAttention)

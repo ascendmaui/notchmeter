@@ -586,6 +586,56 @@ import Testing
         #expect(await failure(of: provider) == .rateLimited)
     }
 
+    @Test func loadAccount403WithoutSubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "message": "The caller does not have permission"]])
+        exchange.answer = { url in url.path == "/v1internal:loadCodeAssist" ? (403, refusal) : (200, Data()) }
+        let fail = await failure(of: provider)
+        #expect(fail == .accessDenied)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected accessDenied on loadCodeAssist 403")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(!error.isCalm)
+        }
+    }
+
+    @Test func loadAccount403WithSubscriptionRequiredThrowsNotServedCalm() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "details": [["reason": "SUBSCRIPTION_REQUIRED"]]]])
+        exchange.answer = { url in url.path == "/v1internal:loadCodeAssist" ? (403, refusal) : (200, Data()) }
+        let fail = await failure(of: provider)
+        #expect(fail == .notServed)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notServed on loadCodeAssist 403 subscription required")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            #expect(error.isCalm)
+        }
+    }
+
+    @Test func retrieveUserQuotaSummary403WithoutSubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let licensed = json(["currentTier": ["id": "standard-tier"]])
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "message": "Access denied"]])
+        exchange.answer = { url in
+            if url.path == "/v1internal:loadCodeAssist" { return (200, licensed) }
+            if url.path == "/v1internal:retrieveUserQuotaSummary" { return (403, refusal) }
+            return (500, Data())
+        }
+        let fail = await failure(of: provider)
+        #expect(fail == .accessDenied)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected accessDenied on retrieveUserQuotaSummary 403")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(!error.isCalm)
+        }
+    }
+
     @Test func missingCredentialsThrowsNotSignedInWithAppropriateMessageForTool() async throws {
         let emptyDir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-empty-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
