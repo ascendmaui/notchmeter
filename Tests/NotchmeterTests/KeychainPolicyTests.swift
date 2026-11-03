@@ -93,10 +93,35 @@ import Testing
             #expect(error.message.contains("API key"))
         }
         do {
-            _ = try ClaudeProvider.resolveCredentials(configDir: dir, mayPrompt: false, environment: ["TERM": "x"], keychain: notFound, securityTool: { nil })
+            _ = try ClaudeProvider.resolveCredentials(configDir: dir, mayPrompt: false, environment: ["TERM": "x"], claudeJSON: dir.appendingPathComponent("nonexistent.json"), keychain: notFound, securityTool: { nil })
             Issue.record("expected a throw")
         } catch let error as ProviderError {
             #expect(error.needsAttention)
+        }
+    }
+
+    @Test func securityToolReturnsNilImmediatelyWhenPromptsAreDisallowed() {
+        Keychain.setPromptsAllowed(false)
+        defer { Keychain.setPromptsAllowed(true) }
+        let result = Keychain.genericPasswordViaSecurityTool(service: "gh:github.com")
+        #expect(result == nil, "Security tool must never run or prompt when promptsAllowed is false")
+    }
+
+    @Test func genericPasswordWithoutPromptsSuppressesUIAndFailsPromptly() {
+        Keychain.setPromptsAllowed(false)
+        defer { Keychain.setPromptsAllowed(true) }
+        let started = Date()
+        do {
+            _ = try Keychain.genericPassword(service: "notchmeter-nonexistent-test-service-\(UUID().uuidString)", prompt: false)
+            Issue.record("Expected notFound or denied")
+        } catch KeychainError.notFound {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.2, "Must return immediately without UI: elapsed \(elapsed)s")
+        } catch KeychainError.denied {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.2, "Must return immediately without UI: elapsed \(elapsed)s")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 }

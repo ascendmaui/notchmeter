@@ -1841,58 +1841,84 @@ enum Probe {
         case timedOut
     }
 
-    private enum TimeoutGroupResult<R: Sendable>: Sendable {
-        case success(R)
-        case timedOut
-        case error(any Error)
+    private final class TimeoutBox<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private var continuation: CheckedContinuation<T, any Error>?
+        private var operationTask: Task<Void, Never>?
+        private var timerWorkItem: DispatchWorkItem?
+
+        func start(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T, continuation: CheckedContinuation<T, any Error>) {
+            lock.lock()
+            if resumed {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            self.continuation = continuation
+            if seconds <= 0 {
+                lock.unlock()
+                finish(with: .failure(TimeoutError.timedOut))
+                return
+            }
+            let item = DispatchWorkItem { [weak self] in
+                self?.finish(with: .failure(TimeoutError.timedOut))
+            }
+            self.timerWorkItem = item
+            lock.unlock()
+
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(0.001, seconds), execute: item)
+
+            let op = Task {
+                do {
+                    let result = try await operation()
+                    self.finish(with: .success(result))
+                } catch {
+                    self.finish(with: .failure(error))
+                }
+            }
+            lock.lock()
+            if resumed {
+                op.cancel()
+            } else {
+                self.operationTask = op
+            }
+            lock.unlock()
+        }
+
+        func cancel() {
+            finish(with: .failure(CancellationError()))
+        }
+
+        private func finish(with result: Result<T, any Error>) {
+            lock.lock()
+            if resumed {
+                lock.unlock()
+                return
+            }
+            resumed = true
+            let cont = continuation
+            let op = operationTask
+            let item = timerWorkItem
+            continuation = nil
+            operationTask = nil
+            timerWorkItem = nil
+            lock.unlock()
+
+            op?.cancel()
+            item?.cancel()
+            cont?.resume(with: result)
+        }
     }
 
     static func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        let task = Task {
-            try await operation()
-        }
-        let timeoutTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
-        }
+        let box = TimeoutBox<T>()
         return try await withTaskCancellationHandler {
-            let outcome: TimeoutGroupResult<T> = await withTaskGroup(of: TimeoutGroupResult<T>.self) { group -> TimeoutGroupResult<T> in
-                group.addTask {
-                    do {
-                        return .success(try await task.value)
-                    } catch {
-                        return .error(error)
-                    }
-                }
-                group.addTask {
-                    do {
-                        try await timeoutTask.value
-                        return .timedOut
-                    } catch {
-                        return .error(error)
-                    }
-                }
-                guard let first = await group.next() else {
-                    return TimeoutGroupResult<T>.timedOut
-                }
-                group.cancelAll()
-                return first
-            }
-            task.cancel()
-            timeoutTask.cancel()
-            switch outcome {
-            case .success(let result):
-                return result
-            case .timedOut:
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                throw TimeoutError.timedOut
-            case .error(let error):
-                throw error
+            try await withCheckedThrowingContinuation { continuation in
+                box.start(seconds: seconds, operation: operation, continuation: continuation)
             }
         } onCancel: {
-            task.cancel()
-            timeoutTask.cancel()
+            box.cancel()
         }
     }
 
@@ -1900,7 +1926,7 @@ enum Probe {
         Keychain.setPromptsAllowed(false)
         if !json { emit("\(AppInfo.name) probe: reads usage from tools signed in on this Mac; tokens are never printed.") }
         let runTimeout = timeout + 5
-        DispatchQueue.main.asyncAfter(deadline: .now() + runTimeout) {
+        let watchdog = DispatchWorkItem {
             if json {
                 let empty = UsageReport(tools: [:], cost: nil, advice: [], now: Date())
                 FileHandle.standardOutput.write(empty.json)
@@ -1911,8 +1937,10 @@ enum Probe {
             }
             exit(UsageReport.ExitCode.noData.rawValue)
         }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + runTimeout, execute: watchdog)
         Task.detached {
             let report = await gather(verbose: !json, history: history)
+            watchdog.cancel()
             if json {
                 FileHandle.standardOutput.write(report.json)
                 FileHandle.standardOutput.write(Data("\n".utf8))
@@ -1944,8 +1972,13 @@ enum Probe {
                 statuses[provider.tool] = .failed(L("Probe timed out"), cached: nil)
                 continue
             }
+            let remainingBudget = deadline.timeIntervalSinceNow
+            if remainingBudget <= 0 {
+                if verbose { emit("\(name): probe deadline exceeded, skipping") }
+                statuses[provider.tool] = .failed(L("Probe timed out"), cached: nil)
+                continue
+            }
             if verbose { emit("\(name): reading…") }
-            let remainingBudget = max(1.0, deadline.timeIntervalSinceNow)
             let perProviderLimit = min(providerTimeout, remainingBudget)
             do {
                 let reading = try await withTimeout(seconds: perProviderLimit) {
@@ -1976,9 +2009,9 @@ enum Probe {
         let weekly = claude?.windows.first { $0.id == "seven_day" }
         let session = claude?.windows.first { $0.id == "five_hour" }
         let scanner = ClaudeCostScanner()
-        let scanBudget = max(1.0, min(5.0, deadline.timeIntervalSinceNow))
+        let scanBudget = min(5.0, deadline.timeIntervalSinceNow)
         let cost: CostSummary
-        if Date() >= deadline {
+        if scanBudget <= 0 {
             if verbose { emit("Probe deadline exceeded, skipping cost scan") }
             cost = .empty
         } else if let scanned = try? await withTimeout(seconds: scanBudget, operation: {

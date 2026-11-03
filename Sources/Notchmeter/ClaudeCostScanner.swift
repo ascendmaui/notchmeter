@@ -432,6 +432,7 @@ actor ClaudeCostScanner {
         var changed = false
         let projects = ProjectName.Resolver()
         for (url, project) in files {
+            guard !Task.isCancelled else { break }
             let path = url.path
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = values?.fileSize ?? 0
@@ -903,14 +904,18 @@ struct CostHistory: Sendable {
     /// sidecar rather than the history file itself because compaction rewrites the history atomically, a temp
     /// file plus a rename, which gives the path a new inode: a lock taken on the old one would be dropped by the
     /// very write it has to exclude.
-    private static func locked<T>(_ url: URL, _ operation: Int32, _ body: () -> T) -> T? {
+    private static func locked<T>(_ url: URL, _ operation: Int32, timeout: TimeInterval = 0.25, _ body: () -> T) -> T? {
         // O_RDONLY: flock(2) locks the open file, not its access mode, so a sidecar another uid left behind (a
         // probe run under sudo keeps HOME) or one restored read-only still takes the lock. Only the folder has to
         // be writable, which the history itself already needs.
         let fd = open(url.appendingPathExtension("lock").path, O_CREAT | O_RDONLY | O_CLOEXEC, 0o644)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
-        guard flock(fd, operation) == 0 else { return nil }
+        let deadline = Date().addingTimeInterval(timeout)
+        while flock(fd, operation | LOCK_NB) != 0 {
+            if Date() >= deadline { return nil }
+            usleep(10_000)
+        }
         defer { flock(fd, LOCK_UN) }
         return body()
     }

@@ -130,6 +130,7 @@ actor CursorProvider: UsageProvider {
         var events: [UsageEvent] = []
         var page = 1
         while page <= Self.maxEventPages {
+            if Task.isCancelled { return false }
             let body = Self.usageEventsRequestBody(start: start, end: now, teamId: teamId, page: page)
             guard let (data, response) = try? await send(Self.usageEventsURL, cookie: cookie, body: body) else {
                 log.error("Cursor usage events: the request failed on page \(page)")

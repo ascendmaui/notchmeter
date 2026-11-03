@@ -395,7 +395,6 @@
 "GitHub's Copilot endpoint answered" = "GitHub Copilot 엔드포인트 응답 오류";
 "Glance (a card for a few seconds)" = "잠깐 보기(몇 초간 카드 표시)";
 "Global: they work from any app; with All displays, the panel on the display under the pointer answers. The panel's own keys, when it was opened by a click, a swipe, the shortcut or a notification: Escape closes it, ⌘R refreshes, ⌘, opens Settings, ⌘Q quits. A hover-opened panel never takes the keyboard." = "전역: 어느 앱에서나 동작합니다. 모든 디스플레이에서는 포인터가 있는 디스플레이의 패널이 응답합니다. 클릭, 스와이프, 단축키, 알림으로 열렸을 때 패널 자체의 키: Escape 닫기, ⌘R 새로 고침, ⌘, 설정 열기, ⌘Q 종료. 호버로 열린 패널은 키보드를 가져가지 않습니다.";
-"Google refused the quota read for this account" = "Google이 이 계정의 할당량 읽기를 거부했습니다";
 "Google stopped serving Gemini CLI quota to personal accounts in June 2026; Code Assist Standard and Enterprise accounts still report it" = "Google은 2026년 6월에 개인 계정에 대한 Gemini CLI 할당량 제공을 중단했습니다. Code Assist Standard 및 Enterprise 계정은 계속 보고됩니다";
 "Google's Code Assist response unreadable" = "Google Code Assist 응답을 읽을 수 없습니다";
 "Google's quota endpoint answered" = "Google 할당량 엔드포인트 응답 오류";

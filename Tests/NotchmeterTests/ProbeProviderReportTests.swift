@@ -378,6 +378,20 @@ import Testing
         }
     }
 
+    @Test func withTimeoutTimesOutPromptlyEvenIfOperationIgnoresCancellation() async throws {
+        let started = Date()
+        do {
+            _ = try await Probe.withTimeout(seconds: 0.05) {
+                usleep(1_500_000)
+                return "finished"
+            }
+            Issue.record("Expected Probe.TimeoutError")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.5, "Probe.withTimeout must return promptly upon timeout rather than waiting for operation to finish: elapsed \(elapsed)s")
+        }
+    }
+
     @Test func probeReportWithNeedsAttentionToolsShowsCorrectProblemAndExitCode() throws {
         let geminiProblem = "Gemini CLI's login has expired. Run Gemini CLI once so it signs back in"
         let antigravityProblem = "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in"
@@ -778,5 +792,211 @@ import Testing
         let report = await Probe.gather(verbose: false, timeout: 0)
         #expect(report.exitCode == .noData)
         #expect(report.cost?.providers.isEmpty ?? true)
+    }
+
+    @Test func withTimeoutReturnsImmediatelyOnZeroOrNegativeDuration() async throws {
+        let started = Date()
+        do {
+            _ = try await Probe.withTimeout(seconds: 0) {
+                return "never reached"
+            }
+            Issue.record("Expected Probe.TimeoutError for seconds: 0")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.05, "Zero timeout must fail immediately: elapsed \(elapsed)s")
+        }
+
+        do {
+            _ = try await Probe.withTimeout(seconds: -5) {
+                return "never reached"
+            }
+            Issue.record("Expected Probe.TimeoutError for negative seconds")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.05, "Negative timeout must fail immediately: elapsed \(elapsed)s")
+        }
+    }
+
+    @Test func probeReportWithClaudeApiKeyKimiAndOpenCodeIdle() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .idle("Claude Code is on an API key: no plan windows to meter; the Cost card is the meter"),
+            .kimi: .ready(reading(.kimi, plan: nil, [
+                window("pool_chat", "Chat", used: 0.20, resetsIn: 3600, period: 5 * 3600),
+                window("pool_code", "Code", used: 0.85, resetsIn: 3600, period: 5 * 3600)
+            ])),
+            .opencode: .idle("No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card"),
+            .antigravity: .needsAttention("Antigravity's login was refused. Run Gemini CLI or Antigravity once so it signs back in", cached: nil)
+        ]
+        let report = UsageReport(tools: statuses, order: [.claude, .kimi, .opencode, .antigravity], cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        let claude = try entry(list, .claude)
+        #expect(claude["status"] as? String == "idle")
+        #expect(claude["note"] as? String == "Claude Code is on an API key: no plan windows to meter; the Cost card is the meter")
+        #expect(claude["problem"] is NSNull)
+
+        let kimi = try entry(list, .kimi)
+        #expect(kimi["status"] as? String == "ready")
+        let kimiWindows = try #require(kimi["windows"] as? [[String: Any]])
+        #expect(kimiWindows.count == 2)
+        #expect(JSON.number(kimiWindows[1]["usedFraction"]) == 0.85)
+
+        let opencode = try entry(list, .opencode)
+        #expect(opencode["status"] as? String == "idle")
+        #expect(opencode["note"] as? String == "No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card")
+
+        let antigravity = try entry(list, .antigravity)
+        #expect(antigravity["status"] as? String == "needsAttention")
+        #expect(antigravity["problem"] as? String == "Antigravity's login was refused. Run Gemini CLI or Antigravity once so it signs back in")
+
+        #expect(report.exitCode == .nearLimit, "Kimi at 85% utilization triggers exit code 10")
+    }
+
+    @Test func probeGatherSkipsRemainingProvidersOnceDeadlineExpires() async {
+        // A tiny timeout causes gather to skip all providers whose budget has expired
+        let report = await Probe.gather(verbose: false, timeout: 0.001)
+        #expect(report.exitCode == .noData)
+        for (_, status) in report.tools {
+            switch status {
+            case .failed(let msg, _):
+                #expect(msg == L("Probe timed out"))
+            case .notInstalled:
+                break
+            default:
+                Issue.record("Expected .failed or .notInstalled when deadline expired, got \(status)")
+            }
+        }
+    }
+
+    @Test func withTimeoutResumesWithCancellationErrorWhenTaskIsCancelled() async {
+        let task = Task {
+            try await Probe.withTimeout(seconds: 10) {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return "never"
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Expected CancellationError when task is cancelled")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
+
+    @Test func withTimeoutReturnsImmediatelyWhenCallingTaskWasCancelled() async {
+        let task = Task { () -> String in
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return try await Probe.withTimeout(seconds: 5.0) {
+                return "should cancel"
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Expected CancellationError for cancelled task")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
+
+    @Test func probeReportWithGeminiAntigravityAndCopilotNeedsAttention() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .ready(reading(.claude, plan: "Max 5x", [window("five_hour", "Session", used: 0.15, resetsIn: 1800, period: 5 * 3600)])),
+            .codex: .ready(reading(.codex, plan: "Plus", [window("session", "Session", used: 0.10, resetsIn: 18000, period: 5 * 3600)])),
+            .cursor: .failed("Cursor usage endpoint answered (HTTP 500)", cached: nil),
+            .gemini: .needsAttention("Gemini CLI's login was refused. Run Gemini CLI once so it signs back in", cached: nil),
+            .antigravity: .needsAttention("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in", cached: nil),
+            .copilot: .needsAttention("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage", cached: nil),
+            .kimi: .notInstalled,
+            .opencode: .idle("No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card")
+        ]
+        let report = UsageReport(tools: statuses, order: ToolID.allCases, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        let gemini = try entry(list, .gemini)
+        #expect(gemini["status"] as? String == "needsAttention")
+        #expect(gemini["problem"] as? String == "Gemini CLI's login was refused. Run Gemini CLI once so it signs back in")
+
+        let antigravity = try entry(list, .antigravity)
+        #expect(antigravity["status"] as? String == "needsAttention")
+        #expect(antigravity["problem"] as? String == "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in")
+
+        let copilot = try entry(list, .copilot)
+        #expect(copilot["status"] as? String == "needsAttention")
+        #expect(copilot["problem"] as? String == "Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage")
+
+        let cursor = try entry(list, .cursor)
+        #expect(cursor["status"] as? String == "failed")
+        #expect(cursor["problem"] as? String == "Cursor usage endpoint answered (HTTP 500)")
+
+        let opencode = try entry(list, .opencode)
+        #expect(opencode["status"] as? String == "idle")
+
+        let kimi = try entry(list, .kimi)
+        #expect(kimi["status"] as? String == "notInstalled")
+
+        #expect(report.exitCode == .ok, "Tools at 10-15% utilization exit with 0 ok even with other tools requiring attention")
+    }
+
+    @Test func probeReportWhenAllToolsNeedAttentionExitsWithExitCode30() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .needsAttention("Claude Code's login has expired. Run `claude` once so it signs back in", cached: nil),
+            .codex: .needsAttention("Sign in to ChatGPT in Codex to read your usage", cached: nil),
+            .cursor: .needsAttention("Cursor's login has expired. Open Cursor once so it signs back in", cached: nil),
+            .gemini: .needsAttention("Gemini CLI's login has expired. Run Gemini CLI once so it signs back in", cached: nil),
+            .antigravity: .needsAttention("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in", cached: nil),
+            .copilot: .needsAttention("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage", cached: nil),
+            .kimi: .needsAttention("Kimi Code's login has expired. Run Kimi Code once so it signs back in", cached: nil),
+            .opencode: .needsAttention("OpenCode's credentials need renewal", cached: nil)
+        ]
+        let report = UsageReport(tools: statuses, order: ToolID.allCases, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        #expect(report.exitCode == .noData)
+        for tool in ToolID.allCases {
+            let item = try entry(list, tool)
+            #expect(item["status"] as? String == "needsAttention")
+            #expect((item["problem"] as? String)?.isEmpty == false)
+            #expect(item["windows"] is NSNull || item["windows"] == nil)
+        }
+    }
+
+    @Test func probeReportExitCodeElevatesToNearLimitWhenPaceIsBehindEvenAtLowUtilization() throws {
+        // Window is 5 hours long, 30 minutes elapsed (resets in 4.5 hours = 16200s), 35% used.
+        // At 35% in 10% of time, pace is significantly behind, projecting >100% usage.
+        let pacedBehindWindow = window("session", "Session", used: 0.35, resetsIn: 16200, period: 5 * 3600)
+        let reading = reading(.claude, plan: "Pro", [pacedBehindWindow])
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .ready(reading),
+            .codex: .notInstalled
+        ]
+        let report = UsageReport(tools: statuses, order: [.claude, .codex], cost: nil, advice: [], now: now)
+        #expect(Pace.status(for: pacedBehindWindow, now: now) == .behind)
+        #expect(report.exitCode == .nearLimit, "A window paced behind must elevate exit code to nearLimit (10) even below 80% used")
+
+        let list = try tools(report)
+        let claude = try entry(list, .claude)
+        let windows = try #require(claude["windows"] as? [[String: Any]])
+        #expect(windows.first?["pace"] as? String == "behind")
+    }
+
+    @Test func withTimeoutPassesThroughCancellationErrorFromInsideOperation() async {
+        do {
+            _ = try await Probe.withTimeout(seconds: 5.0) {
+                throw CancellationError()
+            }
+            Issue.record("Expected CancellationError thrown from inside operation")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
     }
 }

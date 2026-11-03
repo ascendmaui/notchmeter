@@ -73,6 +73,7 @@ actor CodexCostScanner {
         var fine: [CodexUsage] = []
         let projects = ProjectName.Resolver()
         for url in Self.rolloutFiles(under: sessionsFolder, modifiedSince: cutoff) {
+            guard !Task.isCancelled else { break }
             let path = url.path
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = values?.fileSize ?? 0

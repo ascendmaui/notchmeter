@@ -586,6 +586,56 @@ import Testing
         #expect(await failure(of: provider) == .rateLimited)
     }
 
+    @Test func loadAccount403WithoutSubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "message": "The caller does not have permission"]])
+        exchange.answer = { url in url.path == "/v1internal:loadCodeAssist" ? (403, refusal) : (200, Data()) }
+        let fail = await failure(of: provider)
+        #expect(fail == .accessDenied)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected accessDenied on loadCodeAssist 403")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(!error.isCalm)
+        }
+    }
+
+    @Test func loadAccount403WithSubscriptionRequiredThrowsNotServedCalm() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "details": [["reason": "SUBSCRIPTION_REQUIRED"]]]])
+        exchange.answer = { url in url.path == "/v1internal:loadCodeAssist" ? (403, refusal) : (200, Data()) }
+        let fail = await failure(of: provider)
+        #expect(fail == .notServed)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected notServed on loadCodeAssist 403 subscription required")
+        } catch let error as ProviderError {
+            #expect(!error.needsAttention)
+            #expect(error.isCalm)
+        }
+    }
+
+    @Test func retrieveUserQuotaSummary403WithoutSubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let licensed = json(["currentTier": ["id": "standard-tier"]])
+        let refusal = json(["error": ["code": 403, "status": "PERMISSION_DENIED", "message": "Access denied"]])
+        exchange.answer = { url in
+            if url.path == "/v1internal:loadCodeAssist" { return (200, licensed) }
+            if url.path == "/v1internal:retrieveUserQuotaSummary" { return (403, refusal) }
+            return (500, Data())
+        }
+        let fail = await failure(of: provider)
+        #expect(fail == .accessDenied)
+        do {
+            _ = try await provider.fetch()
+            Issue.record("Expected accessDenied on retrieveUserQuotaSummary 403")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            #expect(!error.isCalm)
+        }
+    }
+
     @Test func missingCredentialsThrowsNotSignedInWithAppropriateMessageForTool() async throws {
         let emptyDir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-empty-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
@@ -922,6 +972,151 @@ import Testing
         } catch let error as ProviderError {
             #expect(!error.needsAttention)
             #expect(error == .notServed(CodeAssistProvider.shutdownMessage))
+        }
+    }
+
+    @Test func antigravitySubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-antigravity-subreq-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let account = json(["currentTier": ["id": "standard-tier"]])
+        let subReqError = json([
+            "error": [
+                "code": 403,
+                "message": "Subscription required",
+                "details": [
+                    ["@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SUBSCRIPTION_REQUIRED"]
+                ]
+            ]
+        ])
+
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, account)
+            case "/v1internal:retrieveUserQuotaSummary": (403, subReqError)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: dir,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        do {
+            _ = try await antigravityProvider.fetch()
+            Issue.record("Expected accessDenied when Antigravity gets 403 SUBSCRIPTION_REQUIRED")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .accessDenied(let msg):
+                #expect(msg.contains("Antigravity"))
+            default:
+                Issue.record("Expected .accessDenied, got \(error)")
+            }
+        }
+    }
+
+    @Test func antigravityUnsupportedShutdownThrowsAccessDeniedAndNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-antigravity-unsupported-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let unsupported = json(["ineligibleTiers": [["reasonCode": "UNSUPPORTED_CLIENT", "tierId": "free-tier"]]])
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, unsupported)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: dir,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        do {
+            _ = try await antigravityProvider.fetch()
+            Issue.record("Expected accessDenied when Antigravity gets unsupported client")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .accessDenied(let msg):
+                #expect(msg.contains("Antigravity"))
+            default:
+                Issue.record("Expected .accessDenied, got \(error)")
+            }
+        }
+    }
+
+    @Test func geminiNonSubscription403ThrowsAccessDeniedWithNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-gemini-denied-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let accessDeniedError = json([
+            "error": [
+                "code": 403,
+                "message": "Permission denied for project",
+                "details": [
+                    ["@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "ACCESS_DENIED"]
+                ]
+            ]
+        ])
+
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (403, accessDeniedError)
+            default: (404, Data())
+            }
+        }
+
+        let geminiProvider = CodeAssistProvider(tool: .gemini, session: session, geminiHome: dir)
+        do {
+            _ = try await geminiProvider.fetch()
+            Issue.record("Expected accessDenied when Gemini gets 403 non-subscription refusal")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .accessDenied(let msg):
+                #expect(msg.contains("Gemini CLI's login was refused"))
+            default:
+                Issue.record("Expected .accessDenied, got \(error)")
+            }
+        }
+    }
+
+    @Test func gemini401ThrowsNotSignedInWithNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-gemini-401-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.unauth","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (401, Data(#"{"error":"unauthenticated"}"#.utf8))
+            default: (404, Data())
+            }
+        }
+
+        let geminiProvider = CodeAssistProvider(tool: .gemini, session: session, geminiHome: dir)
+        do {
+            _ = try await geminiProvider.fetch()
+            Issue.record("Expected notSignedIn when Gemini gets 401")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .notSignedIn(let msg):
+                #expect(msg.contains("Gemini CLI's login was refused"))
+            default:
+                Issue.record("Expected .notSignedIn, got \(error)")
+            }
         }
     }
 }

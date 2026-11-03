@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import NotchmeterShims
 import os
 import Security
@@ -70,14 +71,24 @@ enum Keychain {
         let allowed = access.withLock { $0.promptsAllowed }
         if !prompt, allowed { notchmeter_keychain_set_prompts_allowed(false) }
         defer { if !prompt, allowed { notchmeter_keychain_set_prompts_allowed(true) } }
-        let query: [CFString: Any] = [
+        var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecMatchLimit: kSecMatchLimitOne,
             kSecReturnData: true,
         ]
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status: OSStatus
+        if !prompt || !allowed {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext] = context
+            var unmanaged: Unmanaged<CFTypeRef>?
+            status = notchmeter_keychain_copy_matching_suppressed(query as CFDictionary, &unmanaged)
+            result = unmanaged?.takeRetainedValue()
+        } else {
+            status = SecItemCopyMatching(query as CFDictionary, &result)
+        }
         switch status {
         case errSecSuccess:
             guard let data = result as? Data else { throw KeychainError.other(status) }
@@ -95,6 +106,7 @@ enum Keychain {
     /// so it is already in the item's access list and never raises the dialog; the token travels the pipe and is
     /// never logged or printed. nil when the tool finds no item or is refused.
     static func genericPasswordViaSecurityTool(service: String, timeout: TimeInterval = 4) -> Data? {
+        guard access.withLock({ $0.promptsAllowed }) else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", service, "-w"]
@@ -112,6 +124,7 @@ enum Keychain {
             done.leave()
         }
         if done.wait(timeout: .now() + timeout) == .timedOut {
+            try? output.fileHandleForReading.close()
             process.terminate()
             return nil
         }
