@@ -71,7 +71,7 @@ enum CommandLineTool {
             exit(report.exitCode)
         }
         let liveProbeTimeout = Probe.timeout + 5
-        DispatchQueue.main.asyncAfter(deadline: .now() + liveProbeTimeout) {
+        let watchdog = DispatchWorkItem {
             if json {
                 let empty = UsageReport(tools: [:], cost: nil, advice: [], now: Date())
                 FileHandle.standardOutput.write(empty.json)
@@ -81,8 +81,10 @@ enum CommandLineTool {
             }
             exit(30)
         }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + liveProbeTimeout, execute: watchdog)
         Task.detached {
             let report = await Probe.gather()
+            watchdog.cancel()
             let limited = tool.map { report.limited(to: $0) } ?? report
             if json {
                 FileHandle.standardOutput.write(limited.json)

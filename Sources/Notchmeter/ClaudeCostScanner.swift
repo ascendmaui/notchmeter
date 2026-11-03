@@ -432,6 +432,7 @@ actor ClaudeCostScanner {
         var changed = false
         let projects = ProjectName.Resolver()
         for (url, project) in files {
+            guard !Task.isCancelled else { break }
             let path = url.path
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = values?.fileSize ?? 0

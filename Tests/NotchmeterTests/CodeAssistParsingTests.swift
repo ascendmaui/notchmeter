@@ -974,6 +974,81 @@ import Testing
             #expect(error == .notServed(CodeAssistProvider.shutdownMessage))
         }
     }
+
+    @Test func antigravitySubscriptionRequiredThrowsAccessDeniedAndNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-antigravity-subreq-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let account = json(["currentTier": ["id": "standard-tier"]])
+        let subReqError = json([
+            "error": [
+                "code": 403,
+                "message": "Subscription required",
+                "details": [
+                    ["@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SUBSCRIPTION_REQUIRED"]
+                ]
+            ]
+        ])
+
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, account)
+            case "/v1internal:retrieveUserQuotaSummary": (403, subReqError)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: dir,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        do {
+            _ = try await antigravityProvider.fetch()
+            Issue.record("Expected accessDenied when Antigravity gets 403 SUBSCRIPTION_REQUIRED")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .accessDenied(let msg):
+                #expect(msg.contains("Antigravity"))
+            default:
+                Issue.record("Expected .accessDenied, got \(error)")
+            }
+        }
+    }
+
+    @Test func antigravityUnsupportedShutdownThrowsAccessDeniedAndNeedsAttention() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notchmeter-ca-antigravity-unsupported-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let expiry = Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)
+        try Data(#"{"access_token":"ya29.valid","expiry_date":\#(expiry)}"#.utf8).write(to: dir.appendingPathComponent("oauth_creds.json"))
+
+        let unsupported = json(["ineligibleTiers": [["reasonCode": "UNSUPPORTED_CLIENT", "tierId": "free-tier"]]])
+        exchange.answer = { url in
+            switch url.path {
+            case "/v1internal:loadCodeAssist": (200, unsupported)
+            default: (404, Data())
+            }
+        }
+
+        let antigravityProvider = CodeAssistProvider(tool: .antigravity, session: session, geminiHome: dir,
+                                                     applicationBundle: dir.appendingPathComponent("none.app"), antigravityHome: dir.appendingPathComponent("none"))
+        do {
+            _ = try await antigravityProvider.fetch()
+            Issue.record("Expected accessDenied when Antigravity gets unsupported client")
+        } catch let error as ProviderError {
+            #expect(error.needsAttention)
+            switch error {
+            case .accessDenied(let msg):
+                #expect(msg.contains("Antigravity"))
+            default:
+                Issue.record("Expected .accessDenied, got \(error)")
+            }
+        }
+    }
 }
 
 /// Which ProviderError a fetch ends in, by case; nil when it succeeds or fails some other way.

@@ -1846,10 +1846,14 @@ enum Probe {
         private var resumed = false
         private var continuation: CheckedContinuation<T, any Error>?
         private var operationTask: Task<Void, Never>?
-        private var timerTask: Task<Void, Never>?
+        private var timerWorkItem: DispatchWorkItem?
 
         func start(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T, continuation: CheckedContinuation<T, any Error>) {
             self.continuation = continuation
+            if seconds <= 0 {
+                finish(with: .failure(TimeoutError.timedOut))
+                return
+            }
             self.operationTask = Task {
                 do {
                     let result = try await operation()
@@ -1858,14 +1862,11 @@ enum Probe {
                     self.finish(with: .failure(error))
                 }
             }
-            self.timerTask = Task {
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(max(0.001, seconds) * 1_000_000_000))
-                    self.finish(with: .failure(TimeoutError.timedOut))
-                } catch {
-                    // Timer cancelled
-                }
+            let item = DispatchWorkItem { [weak self] in
+                self?.finish(with: .failure(TimeoutError.timedOut))
             }
+            self.timerWorkItem = item
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(0.001, seconds), execute: item)
         }
 
         func cancel() {
@@ -1881,14 +1882,14 @@ enum Probe {
             resumed = true
             let cont = continuation
             let op = operationTask
-            let timer = timerTask
+            let item = timerWorkItem
             continuation = nil
             operationTask = nil
-            timerTask = nil
+            timerWorkItem = nil
             lock.unlock()
 
             op?.cancel()
-            timer?.cancel()
+            item?.cancel()
             cont?.resume(with: result)
         }
     }
@@ -1908,7 +1909,7 @@ enum Probe {
         Keychain.setPromptsAllowed(false)
         if !json { emit("\(AppInfo.name) probe: reads usage from tools signed in on this Mac; tokens are never printed.") }
         let runTimeout = timeout + 5
-        DispatchQueue.main.asyncAfter(deadline: .now() + runTimeout) {
+        let watchdog = DispatchWorkItem {
             if json {
                 let empty = UsageReport(tools: [:], cost: nil, advice: [], now: Date())
                 FileHandle.standardOutput.write(empty.json)
@@ -1919,8 +1920,10 @@ enum Probe {
             }
             exit(UsageReport.ExitCode.noData.rawValue)
         }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + runTimeout, execute: watchdog)
         Task.detached {
             let report = await gather(verbose: !json, history: history)
+            watchdog.cancel()
             if json {
                 FileHandle.standardOutput.write(report.json)
                 FileHandle.standardOutput.write(Data("\n".utf8))
@@ -1952,8 +1955,13 @@ enum Probe {
                 statuses[provider.tool] = .failed(L("Probe timed out"), cached: nil)
                 continue
             }
+            let remainingBudget = deadline.timeIntervalSinceNow
+            if remainingBudget <= 0 {
+                if verbose { emit("\(name): probe deadline exceeded, skipping") }
+                statuses[provider.tool] = .failed(L("Probe timed out"), cached: nil)
+                continue
+            }
             if verbose { emit("\(name): reading…") }
-            let remainingBudget = max(1.0, deadline.timeIntervalSinceNow)
             let perProviderLimit = min(providerTimeout, remainingBudget)
             do {
                 let reading = try await withTimeout(seconds: perProviderLimit) {
@@ -1984,9 +1992,9 @@ enum Probe {
         let weekly = claude?.windows.first { $0.id == "seven_day" }
         let session = claude?.windows.first { $0.id == "five_hour" }
         let scanner = ClaudeCostScanner()
-        let scanBudget = max(1.0, min(5.0, deadline.timeIntervalSinceNow))
+        let scanBudget = min(5.0, deadline.timeIntervalSinceNow)
         let cost: CostSummary
-        if Date() >= deadline {
+        if scanBudget <= 0 {
             if verbose { emit("Probe deadline exceeded, skipping cost scan") }
             cost = .empty
         } else if let scanned = try? await withTimeout(seconds: scanBudget, operation: {

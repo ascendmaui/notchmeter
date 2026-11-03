@@ -212,9 +212,13 @@ actor CodeAssistProvider: UsageProvider {
         }
         if let unmetered { return unmetered }
         if let lastError, lastError.needsAttention { throw lastError }
-        if shutdown { throw ProviderError.notServed(Self.shutdownMessage) }
+        if shutdown {
+            if tool == .antigravity { throw ProviderError.accessDenied(refusedMessage) }
+            throw ProviderError.notServed(Self.shutdownMessage)
+        }
         if let lastError { throw lastError }
         if let transportError { throw transportError }
+        if tool == .antigravity { throw ProviderError.accessDenied(refusedMessage) }
         throw ProviderError.notServed(Self.shutdownMessage)
     }
 
@@ -230,10 +234,10 @@ actor CodeAssistProvider: UsageProvider {
                 throw ProviderError.notSignedIn(refusedMessage)
             }
             if summaryResponse?.statusCode == 403 {
-                if Self.isSubscriptionRequired(summary) {
+                if tool == .gemini && Self.isSubscriptionRequired(summary) {
                     throw ProviderError.notServed(Self.shutdownMessage)
                 }
-                throw ProviderError.accessDenied(L("Google refused the quota read for this account"))
+                throw ProviderError.accessDenied(refusedMessage)
             }
         }
         let quotaURL = Self.url(host: host, method: "retrieveUserQuota")
@@ -253,7 +257,9 @@ actor CodeAssistProvider: UsageProvider {
         case 401:
             throw ProviderError.notSignedIn(refusedMessage)
         case 403:
-            guard Self.isSubscriptionRequired(finalQuota) else { throw ProviderError.accessDenied(L("Google refused the quota read for this account")) }
+            guard tool == .gemini && Self.isSubscriptionRequired(finalQuota) else {
+                throw ProviderError.accessDenied(refusedMessage)
+            }
             throw ProviderError.notServed(Self.shutdownMessage)
         case 429:
             throw ProviderError.rateLimited(retryAfter: RetryAfter.seconds(from: finalResponse))
@@ -272,7 +278,7 @@ actor CodeAssistProvider: UsageProvider {
         case 401:
             throw ProviderError.notSignedIn(refusedMessage)
         case 403:
-            if Self.isSubscriptionRequired(data) {
+            if tool == .gemini && Self.isSubscriptionRequired(data) {
                 throw ProviderError.notServed(Self.shutdownMessage)
             }
             throw ProviderError.accessDenied(refusedMessage)

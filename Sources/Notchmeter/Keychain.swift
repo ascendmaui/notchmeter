@@ -95,6 +95,7 @@ enum Keychain {
     /// so it is already in the item's access list and never raises the dialog; the token travels the pipe and is
     /// never logged or printed. nil when the tool finds no item or is refused.
     static func genericPasswordViaSecurityTool(service: String, timeout: TimeInterval = 4) -> Data? {
+        guard access.withLock({ $0.promptsAllowed }) else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", service, "-w"]
@@ -112,6 +113,7 @@ enum Keychain {
             done.leave()
         }
         if done.wait(timeout: .now() + timeout) == .timedOut {
+            try? output.fileHandleForReading.close()
             process.terminate()
             return nil
         }

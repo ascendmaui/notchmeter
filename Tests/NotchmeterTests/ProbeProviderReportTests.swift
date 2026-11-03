@@ -793,4 +793,78 @@ import Testing
         #expect(report.exitCode == .noData)
         #expect(report.cost?.providers.isEmpty ?? true)
     }
+
+    @Test func withTimeoutReturnsImmediatelyOnZeroOrNegativeDuration() async throws {
+        let started = Date()
+        do {
+            _ = try await Probe.withTimeout(seconds: 0) {
+                return "never reached"
+            }
+            Issue.record("Expected Probe.TimeoutError for seconds: 0")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.05, "Zero timeout must fail immediately: elapsed \(elapsed)s")
+        }
+
+        do {
+            _ = try await Probe.withTimeout(seconds: -5) {
+                return "never reached"
+            }
+            Issue.record("Expected Probe.TimeoutError for negative seconds")
+        } catch is Probe.TimeoutError {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.05, "Negative timeout must fail immediately: elapsed \(elapsed)s")
+        }
+    }
+
+    @Test func probeReportWithClaudeApiKeyKimiAndOpenCodeIdle() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .idle("Claude Code is on an API key: no plan windows to meter; the Cost card is the meter"),
+            .kimi: .ready(reading(.kimi, plan: nil, [
+                window("pool_chat", "Chat", used: 0.20, resetsIn: 3600, period: 5 * 3600),
+                window("pool_code", "Code", used: 0.85, resetsIn: 3600, period: 5 * 3600)
+            ])),
+            .opencode: .idle("No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card"),
+            .antigravity: .needsAttention("Antigravity's login was refused. Run Gemini CLI or Antigravity once so it signs back in", cached: nil)
+        ]
+        let report = UsageReport(tools: statuses, order: [.claude, .kimi, .opencode, .antigravity], cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        let claude = try entry(list, .claude)
+        #expect(claude["status"] as? String == "idle")
+        #expect(claude["note"] as? String == "Claude Code is on an API key: no plan windows to meter; the Cost card is the meter")
+        #expect(claude["problem"] is NSNull)
+
+        let kimi = try entry(list, .kimi)
+        #expect(kimi["status"] as? String == "ready")
+        let kimiWindows = try #require(kimi["windows"] as? [[String: Any]])
+        #expect(kimiWindows.count == 2)
+        #expect(JSON.number(kimiWindows[1]["usedFraction"]) == 0.85)
+
+        let opencode = try entry(list, .opencode)
+        #expect(opencode["status"] as? String == "idle")
+        #expect(opencode["note"] as? String == "No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card")
+
+        let antigravity = try entry(list, .antigravity)
+        #expect(antigravity["status"] as? String == "needsAttention")
+        #expect(antigravity["problem"] as? String == "Antigravity's login was refused. Run Gemini CLI or Antigravity once so it signs back in")
+
+        #expect(report.exitCode == .nearLimit, "Kimi at 85% utilization triggers exit code 10")
+    }
+
+    @Test func probeGatherSkipsRemainingProvidersOnceDeadlineExpires() async {
+        // A tiny timeout causes gather to skip all providers whose budget has expired
+        let report = await Probe.gather(verbose: false, timeout: 0.001)
+        #expect(report.exitCode == .noData)
+        for (_, status) in report.tools {
+            switch status {
+            case .failed(let msg, _):
+                #expect(msg == L("Probe timed out"))
+            case .notInstalled:
+                break
+            default:
+                Issue.record("Expected .failed or .notInstalled when deadline expired, got \(status)")
+            }
+        }
+    }
 }

@@ -99,4 +99,11 @@ import Testing
             #expect(error.needsAttention)
         }
     }
+
+    @Test func securityToolReturnsNilImmediatelyWhenPromptsAreDisallowed() {
+        Keychain.setPromptsAllowed(false)
+        defer { Keychain.setPromptsAllowed(true) }
+        let result = Keychain.genericPasswordViaSecurityTool(service: "gh:github.com")
+        #expect(result == nil, "Security tool must never run or prompt when promptsAllowed is false")
+    }
 }
