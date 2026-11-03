@@ -944,4 +944,59 @@ import Testing
 
         #expect(report.exitCode == .ok, "Tools at 10-15% utilization exit with 0 ok even with other tools requiring attention")
     }
+
+    @Test func probeReportWhenAllToolsNeedAttentionExitsWithExitCode30() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .needsAttention("Claude Code's login has expired. Run `claude` once so it signs back in", cached: nil),
+            .codex: .needsAttention("Sign in to ChatGPT in Codex to read your usage", cached: nil),
+            .cursor: .needsAttention("Cursor's login has expired. Open Cursor once so it signs back in", cached: nil),
+            .gemini: .needsAttention("Gemini CLI's login has expired. Run Gemini CLI once so it signs back in", cached: nil),
+            .antigravity: .needsAttention("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in", cached: nil),
+            .copilot: .needsAttention("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage", cached: nil),
+            .kimi: .needsAttention("Kimi Code's login has expired. Run Kimi Code once so it signs back in", cached: nil),
+            .opencode: .needsAttention("OpenCode's credentials need renewal", cached: nil)
+        ]
+        let report = UsageReport(tools: statuses, order: ToolID.allCases, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        #expect(report.exitCode == .noData)
+        for tool in ToolID.allCases {
+            let item = try entry(list, tool)
+            #expect(item["status"] as? String == "needsAttention")
+            #expect((item["problem"] as? String)?.isEmpty == false)
+            #expect(item["windows"] is NSNull || item["windows"] == nil)
+        }
+    }
+
+    @Test func probeReportExitCodeElevatesToNearLimitWhenPaceIsBehindEvenAtLowUtilization() throws {
+        // Window is 5 hours long, 30 minutes elapsed (resets in 4.5 hours = 16200s), 35% used.
+        // At 35% in 10% of time, pace is significantly behind, projecting >100% usage.
+        let pacedBehindWindow = window("session", "Session", used: 0.35, resetsIn: 16200, period: 5 * 3600)
+        let reading = reading(.claude, plan: "Pro", [pacedBehindWindow])
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .ready(reading),
+            .codex: .notInstalled
+        ]
+        let report = UsageReport(tools: statuses, order: [.claude, .codex], cost: nil, advice: [], now: now)
+        #expect(Pace.status(for: pacedBehindWindow, now: now) == .behind)
+        #expect(report.exitCode == .nearLimit, "A window paced behind must elevate exit code to nearLimit (10) even below 80% used")
+
+        let list = try tools(report)
+        let claude = try entry(list, .claude)
+        let windows = try #require(claude["windows"] as? [[String: Any]])
+        #expect(windows.first?["pace"] as? String == "behind")
+    }
+
+    @Test func withTimeoutPassesThroughCancellationErrorFromInsideOperation() async {
+        do {
+            _ = try await Probe.withTimeout(seconds: 5.0) {
+                throw CancellationError()
+            }
+            Issue.record("Expected CancellationError thrown from inside operation")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
 }
