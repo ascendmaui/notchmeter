@@ -106,4 +106,22 @@ import Testing
         let result = Keychain.genericPasswordViaSecurityTool(service: "gh:github.com")
         #expect(result == nil, "Security tool must never run or prompt when promptsAllowed is false")
     }
+
+    @Test func genericPasswordWithoutPromptsSuppressesUIAndFailsPromptly() {
+        Keychain.setPromptsAllowed(false)
+        defer { Keychain.setPromptsAllowed(true) }
+        let started = Date()
+        do {
+            _ = try Keychain.genericPassword(service: "notchmeter-nonexistent-test-service-\(UUID().uuidString)", prompt: false)
+            Issue.record("Expected notFound or denied")
+        } catch KeychainError.notFound {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.2, "Must return immediately without UI: elapsed \(elapsed)s")
+        } catch KeychainError.denied {
+            let elapsed = Date().timeIntervalSince(started)
+            #expect(elapsed < 0.2, "Must return immediately without UI: elapsed \(elapsed)s")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
 }

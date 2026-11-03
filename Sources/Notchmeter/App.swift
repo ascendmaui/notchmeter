@@ -1849,12 +1849,27 @@ enum Probe {
         private var timerWorkItem: DispatchWorkItem?
 
         func start(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T, continuation: CheckedContinuation<T, any Error>) {
+            lock.lock()
+            if resumed {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
             self.continuation = continuation
             if seconds <= 0 {
+                lock.unlock()
                 finish(with: .failure(TimeoutError.timedOut))
                 return
             }
-            self.operationTask = Task {
+            let item = DispatchWorkItem { [weak self] in
+                self?.finish(with: .failure(TimeoutError.timedOut))
+            }
+            self.timerWorkItem = item
+            lock.unlock()
+
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(0.001, seconds), execute: item)
+
+            let op = Task {
                 do {
                     let result = try await operation()
                     self.finish(with: .success(result))
@@ -1862,11 +1877,13 @@ enum Probe {
                     self.finish(with: .failure(error))
                 }
             }
-            let item = DispatchWorkItem { [weak self] in
-                self?.finish(with: .failure(TimeoutError.timedOut))
+            lock.lock()
+            if resumed {
+                op.cancel()
+            } else {
+                self.operationTask = op
             }
-            self.timerWorkItem = item
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(0.001, seconds), execute: item)
+            lock.unlock()
         }
 
         func cancel() {

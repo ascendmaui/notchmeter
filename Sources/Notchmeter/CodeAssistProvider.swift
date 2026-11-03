@@ -195,6 +195,7 @@ actor CodeAssistProvider: UsageProvider {
         // quota call, so a host the network cannot reach (the daily alias resolving nowhere, a timeout) is a host
         // passed over, not a failed reading, and the production host still gets its turn.
         for host in hosts {
+            guard !Task.isCancelled else { break }
             do {
                 let account = try await loadAccount(host: host, token: activeCredentials.accessToken, antigravity: antigravity)
                 if account.unsupported {

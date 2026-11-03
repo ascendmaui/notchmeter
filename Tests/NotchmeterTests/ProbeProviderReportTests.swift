@@ -867,4 +867,81 @@ import Testing
             }
         }
     }
+
+    @Test func withTimeoutResumesWithCancellationErrorWhenTaskIsCancelled() async {
+        let task = Task {
+            try await Probe.withTimeout(seconds: 10) {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return "never"
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Expected CancellationError when task is cancelled")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
+
+    @Test func withTimeoutReturnsImmediatelyWhenCallingTaskWasCancelled() async {
+        let task = Task { () -> String in
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return try await Probe.withTimeout(seconds: 5.0) {
+                return "should cancel"
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Expected CancellationError for cancelled task")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+    }
+
+    @Test func probeReportWithGeminiAntigravityAndCopilotNeedsAttention() throws {
+        let statuses: [ToolID: ToolStatus] = [
+            .claude: .ready(reading(.claude, plan: "Max 5x", [window("five_hour", "Session", used: 0.15, resetsIn: 1800, period: 5 * 3600)])),
+            .codex: .ready(reading(.codex, plan: "Plus", [window("session", "Session", used: 0.10, resetsIn: 18000, period: 5 * 3600)])),
+            .cursor: .failed("Cursor usage endpoint answered (HTTP 500)", cached: nil),
+            .gemini: .needsAttention("Gemini CLI's login was refused. Run Gemini CLI once so it signs back in", cached: nil),
+            .antigravity: .needsAttention("Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in", cached: nil),
+            .copilot: .needsAttention("Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage", cached: nil),
+            .kimi: .notInstalled,
+            .opencode: .idle("No OpenCode Go turns on this Mac in the last 31 days; its spend is on the Cost card")
+        ]
+        let report = UsageReport(tools: statuses, order: ToolID.allCases, cost: nil, advice: [], now: now)
+        let list = try tools(report)
+
+        let gemini = try entry(list, .gemini)
+        #expect(gemini["status"] as? String == "needsAttention")
+        #expect(gemini["problem"] as? String == "Gemini CLI's login was refused. Run Gemini CLI once so it signs back in")
+
+        let antigravity = try entry(list, .antigravity)
+        #expect(antigravity["status"] as? String == "needsAttention")
+        #expect(antigravity["problem"] as? String == "Antigravity's login has expired. Run Gemini CLI or Antigravity once so it signs back in")
+
+        let copilot = try entry(list, .copilot)
+        #expect(copilot["status"] as? String == "needsAttention")
+        #expect(copilot["problem"] as? String == "Sign in to GitHub Copilot in your editor (or run `gh auth login`) to read your usage")
+
+        let cursor = try entry(list, .cursor)
+        #expect(cursor["status"] as? String == "failed")
+        #expect(cursor["problem"] as? String == "Cursor usage endpoint answered (HTTP 500)")
+
+        let opencode = try entry(list, .opencode)
+        #expect(opencode["status"] as? String == "idle")
+
+        let kimi = try entry(list, .kimi)
+        #expect(kimi["status"] as? String == "notInstalled")
+
+        #expect(report.exitCode == .ok, "Tools at 10-15% utilization exit with 0 ok even with other tools requiring attention")
+    }
 }

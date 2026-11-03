@@ -75,6 +75,7 @@ actor CopilotProvider: UsageProvider {
         var noSubCount = 0
         var serverError: ProviderError?
         for candidate in candidates {
+            guard !Task.isCancelled else { break }
             let data: Data
             let response: HTTPURLResponse?
             do {
@@ -150,6 +151,7 @@ actor CopilotProvider: UsageProvider {
         guard let (list, response) = try? await get(Self.orgsURL, token: token, copilotHeaders: false), response?.statusCode == 200 else { return [] }
         var windows: [LimitWindow] = []
         for org in Self.parseOrgs(list).prefix(10) {
+            guard !Task.isCancelled else { break }
             guard let url = Self.orgBillingURL(org: org, now: now),
                   let (data, answer) = try? await get(url, token: token, copilotHeaders: false), answer?.statusCode == 200
             else { continue }
