@@ -395,7 +395,6 @@
 "GitHub's Copilot endpoint answered" = "điểm cuối Copilot của GitHub trả lời lỗi";
 "Glance (a card for a few seconds)" = "Liếc (hiện thẻ vài giây)";
 "Global: they work from any app; with All displays, the panel on the display under the pointer answers. The panel's own keys, when it was opened by a click, a swipe, the shortcut or a notification: Escape closes it, ⌘R refreshes, ⌘, opens Settings, ⌘Q quits. A hover-opened panel never takes the keyboard." = "Toàn cục: hoạt động từ mọi ứng dụng; với Tất cả màn hình, bảng trên màn hình có con trỏ trả lời. Phím riêng của bảng khi được mở bằng nhấp, vuốt, phím tắt hoặc thông báo: Escape đóng, ⌘R làm mới, ⌘, mở Cài đặt, ⌘Q thoát. Bảng mở bằng di chuột không bao giờ chiếm bàn phím.";
-"Google refused the quota read for this account" = "Google từ chối đọc hạn mức cho tài khoản này";
 "Google stopped serving Gemini CLI quota to personal accounts in June 2026; Code Assist Standard and Enterprise accounts still report it" = "Google đã ngừng cung cấp hạn mức Gemini CLI cho tài khoản cá nhân từ tháng 6/2026; tài khoản Code Assist Standard và Enterprise vẫn báo cáo";
 "Google's Code Assist response unreadable" = "không đọc được phản hồi Code Assist của Google";
 "Google's quota endpoint answered" = "điểm cuối hạn mức của Google trả lời lỗi";

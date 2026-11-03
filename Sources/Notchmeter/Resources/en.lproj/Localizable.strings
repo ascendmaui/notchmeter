@@ -412,7 +412,6 @@
 "GitHub's Copilot endpoint answered" = "GitHub's Copilot endpoint answered";
 "Glance (a card for a few seconds)" = "Glance (a card for a few seconds)";
 "Global: they work from any app; with All displays, the panel on the display under the pointer answers. The panel's own keys, when it was opened by a click, a swipe, the shortcut or a notification: Escape closes it, ⌘R refreshes, ⌘, opens Settings, ⌘Q quits. A hover-opened panel never takes the keyboard." = "Global: they work from any app; with All displays, the panel on the display under the pointer answers. The panel's own keys, when it was opened by a click, a swipe, the shortcut or a notification: Escape closes it, ⌘R refreshes, ⌘, opens Settings, ⌘Q quits. A hover-opened panel never takes the keyboard.";
-"Google refused the quota read for this account" = "Google refused the quota read for this account";
 "Google stopped serving Gemini CLI quota to personal accounts in June 2026; Code Assist Standard and Enterprise accounts still report it" = "Google stopped serving Gemini CLI quota to personal accounts in June 2026; Code Assist Standard and Enterprise accounts still report it";
 "Google's Code Assist response unreadable" = "Google's Code Assist response unreadable";
 "Google's quota endpoint answered" = "Google's quota endpoint answered";

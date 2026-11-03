@@ -395,7 +395,6 @@
 "GitHub's Copilot endpoint answered" = "GitHub 的 Copilot 端點回應異常";
 "Glance (a card for a few seconds)" = "一瞥（顯示卡片幾秒）";
 "Global: they work from any app; with All displays, the panel on the display under the pointer answers. The panel's own keys, when it was opened by a click, a swipe, the shortcut or a notification: Escape closes it, ⌘R refreshes, ⌘, opens Settings, ⌘Q quits. A hover-opened panel never takes the keyboard." = "全域：在任何應用程式中都有效；選擇「所有顯示器」時，由指標所在顯示器上的面板回應。面板自身的按鍵（當它由點擊、滑動、快速鍵或通知開啟時）：Escape 關閉，⌘R 重新整理，⌘, 開啟設定，⌘Q 結束。停留開啟的面板絕不佔用鍵盤。";
-"Google refused the quota read for this account" = "Google 拒絕讀取此帳號的配額";
 "Google stopped serving Gemini CLI quota to personal accounts in June 2026; Code Assist Standard and Enterprise accounts still report it" = "Google 已於 2026 年 6 月停止向個人帳號提供 Gemini CLI 配額；Code Assist Standard 與 Enterprise 帳號仍可回報";
 "Google's Code Assist response unreadable" = "無法解析 Google Code Assist 的回應";
 "Google's quota endpoint answered" = "Google 配額端點回應異常";
